@@ -286,6 +286,7 @@ func (r *Raft) Step(m pb.Message) error {
 	// Your Code Here (2A).
 	if m.Term == 0 {
 		// local message
+		// MsgBeat || MsgHup || MsgPropose
 	} else if m.Term > r.Term {
 		if m.MsgType == pb.MessageType_MsgAppend || m.MsgType == pb.MessageType_MsgHeartbeat {
 			r.becomeFollower(m.Term, m.From)
@@ -297,20 +298,21 @@ func (r *Raft) Step(m pb.Message) error {
 		case pb.MessageType_MsgRequestVote:
 			r.send(pb.Message{MsgType: pb.MessageType_MsgRequestVoteResponse, Term: r.Term, From: r.id, To: m.From, Reject: true})
 		case pb.MessageType_MsgHeartbeat:
-			r.send(pb.Message{MsgType: pb.MessageType_MsgHeartbeatResponse, Term: r.Term, To: m.From})
+			r.send(pb.Message{MsgType: pb.MessageType_MsgHeartbeatResponse, Term: r.Term, From: r.id, To: m.From})
 		}
 		return nil
 	}
 	// now m.Term == r.Term as we return when m.Term < r.Term
+	var err error = nil
 	switch r.State {
 	case StateFollower:
-		_ = r.stepFollower(m)
+		err = r.stepFollower(m)
 	case StateCandidate:
-		_ = r.stepCandidate(m)
+		err = r.stepCandidate(m)
 	case StateLeader:
-		_ = r.stepLeader(m)
+		err = r.stepLeader(m)
 	}
-	return nil
+	return err
 }
 
 func (r *Raft) stepFollower(m pb.Message) error {
@@ -383,7 +385,7 @@ func (r *Raft) handleHeartbeat(m pb.Message) {
 	// Your Code Here (2A).
 	r.electionElapsed = 0
 	r.Lead = m.From
-	r.send(pb.Message{MsgType: pb.MessageType_MsgHeartbeatResponse, Term: r.Term, To: m.From})
+	r.send(pb.Message{MsgType: pb.MessageType_MsgHeartbeatResponse, Term: r.Term, From: r.id, To: m.From})
 }
 
 // handleRequestVote handle RequestVote RPC request
@@ -392,7 +394,6 @@ func (r *Raft) handleRequestVote(m pb.Message) {
 	lastTerm, _ := r.RaftLog.Term(lastIndex)
 	reject := lastTerm > m.LogTerm || (lastTerm == m.LogTerm && lastIndex > m.Index)
 	if (r.Vote != None && r.Vote != m.From) || reject {
-		//fmt.Printf("%+v\n", r)
 		r.send(pb.Message{MsgType: pb.MessageType_MsgRequestVoteResponse, From: r.id, To: m.From, Term: r.Term, Reject: true})
 		return
 	}
