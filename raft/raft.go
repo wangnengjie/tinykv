@@ -193,6 +193,7 @@ func newRaft(c *Config) *Raft {
 // handle send pb.Message
 func (r *Raft) send(m pb.Message) {
 	// Todo: handle term safety
+	m.From = r.id
 	r.msgs = append(r.msgs, m)
 }
 
@@ -209,7 +210,7 @@ func (r *Raft) sendHeartbeat(to uint64) {
 	if r.id == to {
 		return
 	}
-	r.send(pb.Message{MsgType: pb.MessageType_MsgHeartbeat, Term: r.Term, From: r.id, To: to})
+	r.send(pb.Message{MsgType: pb.MessageType_MsgHeartbeat, Term: r.Term, To: to})
 }
 
 // sendRequestVote sends a requestvote RPC to the given peer.
@@ -217,7 +218,7 @@ func (r *Raft) sendRequestVote(to uint64, lastTerm uint64, lastIndex uint64) {
 	if r.id == to {
 		return
 	}
-	r.send(pb.Message{MsgType: pb.MessageType_MsgRequestVote, Term: r.Term, From: r.id, To: to, LogTerm: lastTerm, Index: lastIndex})
+	r.send(pb.Message{MsgType: pb.MessageType_MsgRequestVote, Term: r.Term, To: to, LogTerm: lastTerm, Index: lastIndex})
 }
 
 // tick advances the internal logical clock by a single tick.
@@ -228,13 +229,13 @@ func (r *Raft) tick() {
 		r.electionElapsed++
 		if r.electionElapsed >= r.randomElectionTimeout {
 			r.electionElapsed = 0
-			_ = r.Step(pb.Message{MsgType: pb.MessageType_MsgHup, From: r.id})
+			_ = r.Step(pb.Message{MsgType: pb.MessageType_MsgHup})
 		}
 	case StateLeader:
 		r.heartbeatElapsed++
 		if r.heartbeatElapsed >= r.heartbeatTimeout {
 			r.heartbeatElapsed = 0
-			_ = r.Step(pb.Message{MsgType: pb.MessageType_MsgBeat, From: r.id})
+			_ = r.Step(pb.Message{MsgType: pb.MessageType_MsgBeat})
 		}
 	}
 }
@@ -277,7 +278,7 @@ func (r *Raft) becomeLeader() {
 	r.State = StateLeader
 	// Todo: reset progress
 	// propose a noop entry
-	_ = r.Step(pb.Message{MsgType: pb.MessageType_MsgPropose, Term: r.Term, Entries: []*pb.Entry{{}}})
+	_ = r.Step(pb.Message{MsgType: pb.MessageType_MsgPropose, Entries: []*pb.Entry{{}}})
 }
 
 // Step the entrance of handle message, see `MessageType`
@@ -296,9 +297,9 @@ func (r *Raft) Step(m pb.Message) error {
 	} else if m.Term < r.Term {
 		switch m.MsgType {
 		case pb.MessageType_MsgRequestVote:
-			r.send(pb.Message{MsgType: pb.MessageType_MsgRequestVoteResponse, Term: r.Term, From: r.id, To: m.From, Reject: true})
+			r.send(pb.Message{MsgType: pb.MessageType_MsgRequestVoteResponse, Term: r.Term, To: m.From, Reject: true})
 		case pb.MessageType_MsgHeartbeat:
-			r.send(pb.Message{MsgType: pb.MessageType_MsgHeartbeatResponse, Term: r.Term, From: r.id, To: m.From})
+			r.send(pb.Message{MsgType: pb.MessageType_MsgHeartbeatResponse, Term: r.Term, To: m.From})
 		}
 		return nil
 	}
@@ -385,7 +386,7 @@ func (r *Raft) handleHeartbeat(m pb.Message) {
 	// Your Code Here (2A).
 	r.electionElapsed = 0
 	r.Lead = m.From
-	r.send(pb.Message{MsgType: pb.MessageType_MsgHeartbeatResponse, Term: r.Term, From: r.id, To: m.From})
+	r.send(pb.Message{MsgType: pb.MessageType_MsgHeartbeatResponse, Term: r.Term, To: m.From})
 }
 
 // handleRequestVote handle RequestVote RPC request
@@ -394,13 +395,13 @@ func (r *Raft) handleRequestVote(m pb.Message) {
 	lastTerm, _ := r.RaftLog.Term(lastIndex)
 	reject := lastTerm > m.LogTerm || (lastTerm == m.LogTerm && lastIndex > m.Index)
 	if (r.Vote != None && r.Vote != m.From) || reject {
-		r.send(pb.Message{MsgType: pb.MessageType_MsgRequestVoteResponse, From: r.id, To: m.From, Term: r.Term, Reject: true})
+		r.send(pb.Message{MsgType: pb.MessageType_MsgRequestVoteResponse, To: m.From, Term: r.Term, Reject: true})
 		return
 	}
 	r.Vote = m.From
 	r.electionElapsed = 0
 	r.randomElectionTimeout = r.electionTimeout + rand.Intn(r.electionTimeout)
-	r.send(pb.Message{MsgType: pb.MessageType_MsgRequestVoteResponse, From: r.id, To: m.From, Term: r.Term, Reject: false})
+	r.send(pb.Message{MsgType: pb.MessageType_MsgRequestVoteResponse, To: m.From, Term: r.Term, Reject: false})
 }
 
 // handleSnapshot handle Snapshot RPC request
@@ -418,6 +419,7 @@ func (r *Raft) removeNode(id uint64) {
 	// Your Code Here (3A).
 }
 
+// traverse each peer
 func (r *Raft) eachPeer(fn func(id uint64, prs *Progress)) {
 	for k, v := range r.Prs {
 		fn(k, v)
