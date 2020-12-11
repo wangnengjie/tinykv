@@ -171,6 +171,7 @@ func newRaft(c *Config) *Raft {
 	// Your Code Here (2A).
 	hardstate, _, _ := c.Storage.InitialState()
 	raftlog := newLog(c.Storage)
+	raftlog.committed = hardstate.Commit
 
 	r := &Raft{
 		id:               c.ID,
@@ -188,6 +189,24 @@ func newRaft(c *Config) *Raft {
 	}
 	r.becomeFollower(r.Term, None)
 	return r
+}
+
+// SoftState return the soft state of raft
+func (r *Raft) SoftState() *SoftState {
+	return &SoftState{
+		Lead:      r.Lead,
+		RaftState: r.State,
+	}
+}
+
+// HardState return the hard state of raft.
+func (r *Raft) HardState() pb.HardState {
+	// HardState or &HardState?
+	return pb.HardState{
+		Term:   r.Term,
+		Vote:   r.Vote,
+		Commit: r.RaftLog.committed,
+	}
 }
 
 // send handle send pb.Message
@@ -305,7 +324,8 @@ func (r *Raft) becomeLeader() {
 	})
 
 	// propose a noop entry
-	r.appendEntries([]*pb.Entry{{Data: nil}})
+	//r.appendEntries([]*pb.Entry{{Data: nil}})
+	_ = r.Step(pb.Message{MsgType: pb.MessageType_MsgPropose, Entries: []*pb.Entry{{Data: nil}}})
 }
 
 // Step the entrance of handle message, see `MessageType`
@@ -385,10 +405,10 @@ func (r *Raft) stepCandidate(m pb.Message) error {
 		win, lose := r.checkElection()
 		if win {
 			r.becomeLeader()
-			r.eachPeer(func(id uint64, pr *Progress) {
-				r.sendAppend(id)
-			})
-			r.RaftLog.updateCommit(r.Term, r.Prs)
+			//r.eachPeer(func(id uint64, pr *Progress) {
+			//	r.sendAppend(id)
+			//})
+			//r.RaftLog.updateCommit(r.Term, r.Prs)
 		} else if lose {
 			r.becomeFollower(r.Term, None)
 		}
@@ -418,7 +438,7 @@ func (r *Raft) stepLeader(m pb.Message) error {
 	return nil
 }
 
-// setup an election
+// campaign setup an election
 func (r *Raft) campaign() {
 	r.becomeCandidate()
 	if len(r.Prs) == 1 {
