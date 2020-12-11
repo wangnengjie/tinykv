@@ -190,7 +190,7 @@ func newRaft(c *Config) *Raft {
 	return r
 }
 
-// handle send pb.Message
+// send handle send pb.Message
 func (r *Raft) send(m pb.Message) {
 	// Todo: handle term safety
 	m.From = r.id
@@ -207,10 +207,6 @@ func (r *Raft) sendAppend(to uint64) bool {
 	pr := r.Prs[to]
 	prevLogIndex := pr.Next - 1
 	prevLogTerm, _ := r.RaftLog.Term(prevLogIndex)
-	//if err == ErrUnavailable {
-	//	fmt.Printf("%+v\n", pr)
-	//	panic(err)
-	//}
 	ents := r.RaftLog.getEntries(pr.Next)
 	entries := make([]*pb.Entry, 0, len(ents))
 	for i := range ents {
@@ -418,7 +414,6 @@ func (r *Raft) stepLeader(m pb.Message) error {
 		// ignore now
 	case pb.MessageType_MsgAppendResponse:
 		r.handleAppendEntriesResponse(m)
-
 	}
 	return nil
 }
@@ -453,9 +448,7 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 }
 
 func (r *Raft) handleAppendEntriesResponse(m pb.Message) {
-	//fmt.Println("recv response", m)
 	pr := r.Prs[m.From]
-	//fmt.Printf("%+v\n", m)
 	if m.Reject {
 		pr.Next = m.Index + 1
 		r.sendAppend(m.From)
@@ -517,6 +510,8 @@ func (r *Raft) eachPeer(fn func(id uint64, pr *Progress)) {
 	}
 }
 
+// checkElection check whether a candidate win or lose the election.
+// return (win, lose)
 func (r *Raft) checkElection() (bool, bool) {
 	countVote := 0
 	countReject := 0

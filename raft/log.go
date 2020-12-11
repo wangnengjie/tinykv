@@ -135,11 +135,6 @@ func (l *RaftLog) getEntries(left uint64) []pb.Entry {
 	if left > lastIndex || lastIndex == 0 {
 		return nil
 	}
-	//if left == 0 {
-	//	return l.entries
-	//}
-	//start := left - l.entries[0].Index
-	//end := min(uint64(len(l.entries)), start+right-left)
 	return l.entries[l.entIdx2slcIdx(left):]
 }
 
@@ -152,18 +147,8 @@ func (l *RaftLog) append(ents []*pb.Entry) {
 
 // check to append entries
 func (l *RaftLog) appendEntries(prevLogTerm uint64, prevLogIndex uint64, leaderCommit uint64, ents []*pb.Entry) (uint64, bool) {
-	//fmt.Printf("previndex:%d prevterm:%d  leadercommit:%d ents: %+v\n", prevLogIndex, prevLogTerm, leaderCommit, ents)
-	//if prevLogIndex == 0 {
-	//	l.entries = make([]pb.Entry, 0, len(ents))
-	//	l.append(ents)
-	//	l.committed = min(leaderCommit, l.LastIndex())
-	//	return l.LastIndex(), true
-	//}
-	//fmt.Printf("%v\n", l.entries)
 	t, _ := l.Term(prevLogIndex)
-	//if err == ErrUnavailable || t == 0 {
-	//	return l.LastIndex() + 1, false
-	//}
+	// quick go back in raft paper 5.3
 	if t != prevLogTerm {
 		index := min(prevLogIndex, l.LastIndex())
 		for index > l.committed {
@@ -173,7 +158,6 @@ func (l *RaftLog) appendEntries(prevLogTerm uint64, prevLogIndex uint64, leaderC
 			}
 			index--
 		}
-		//fmt.Println("next idx", index)
 		return index, false
 	}
 	// find the largest inconflict index
@@ -185,14 +169,12 @@ func (l *RaftLog) appendEntries(prevLogTerm uint64, prevLogIndex uint64, leaderC
 			if err != nil || t != ent.Term {
 				l.stabled = min(l.stabled, ent.Index-1)
 				l.entries = l.entries[:l.entIdx2slcIdx(ent.Index-1)+1]
-				//fmt.Println("after remove ents:", l.entries)
 				l.append(ents[i:])
 				break
 			}
 		}
 	}
 
-	//fmt.Println("after ents", l.entries)
 	if leaderCommit > l.committed {
 		l.committed = min(leaderCommit, prevLogIndex+uint64(len(ents)))
 	}
