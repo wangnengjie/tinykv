@@ -163,7 +163,7 @@ func (rn *RawNode) Ready() Ready {
 	if soft.Lead != rn.prevSoftState.Lead || soft.RaftState != rn.prevSoftState.RaftState {
 		ready.SoftState = soft
 	}
-	if hard.Vote != rn.prevHardState.Vote || hard.Term != rn.prevHardState.Term || hard.Commit != rn.prevHardState.Commit {
+	if !isHardStateEqual(hard, rn.prevHardState) {
 		ready.HardState = hard
 	}
 	return ready
@@ -180,7 +180,7 @@ func (rn *RawNode) HasReady() bool {
 		return true
 	}
 	hard := rn.Raft.HardState()
-	if hard.Vote != rn.prevHardState.Vote || hard.Term != rn.prevHardState.Term || hard.Commit != rn.prevHardState.Commit {
+	if !isHardStateEqual(hard, rn.prevHardState) {
 		return true
 	}
 	return false
@@ -193,7 +193,7 @@ func (rn *RawNode) Advance(rd Ready) {
 	if rd.SoftState != nil {
 		rn.prevSoftState = rd.SoftState
 	}
-	if !(rd.HardState.Commit == 0 && rd.HardState.Term == 0 && rd.HardState.Vote == 0) {
+	if !isHardStateEqual(rd.HardState, pb.HardState{}) {
 		rn.prevHardState = rd.HardState
 	}
 	if len(rd.CommittedEntries) > 0 {
