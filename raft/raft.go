@@ -147,6 +147,10 @@ type Raft struct {
 	// random
 	rand *rand.Rand
 
+	readOnly *readOnly
+
+	readStates []ReadState
+
 	// leadTransferee is id of the leader transfer target when its value is not zero.
 	// Follow the procedure defined in section 3.10 of Raft phd thesis.
 	// (https://web.stanford.edu/~ouster/cgi-bin/papers/OngaroPhD.pdf)
@@ -169,10 +173,13 @@ func newRaft(c *Config) *Raft {
 		panic(err.Error())
 	}
 	// Your Code Here (2A).
-	hardstate, _, _ := c.Storage.InitialState()
+	hardstate, confstate, _ := c.Storage.InitialState()
 	raftlog := newLog(c.Storage)
 	raftlog.committed = hardstate.Commit
-
+	peers := c.peers
+	if len(confstate.Nodes) != 0 {
+		peers = confstate.Nodes
+	}
 	r := &Raft{
 		id:               c.ID,
 		Term:             hardstate.Term,
@@ -183,8 +190,9 @@ func newRaft(c *Config) *Raft {
 		heartbeatTimeout: c.HeartbeatTick,
 		electionTimeout:  c.ElectionTick,
 		rand:             rand.New(rand.NewSource(time.Now().UnixNano())),
+		readOnly:         newReadOnly(),
 	}
-	for _, id := range c.peers {
+	for _, id := range peers {
 		r.Prs[id] = &Progress{}
 	}
 	r.becomeFollower(r.Term, None)
@@ -250,7 +258,15 @@ func (r *Raft) sendHeartbeat(to uint64) {
 	if r.id == to {
 		return
 	}
-	r.send(pb.Message{MsgType: pb.MessageType_MsgHeartbeat, Term: r.Term, To: to})
+	r.send(pb.Message{MsgType: pb.MessageType_MsgHeartbeat, Term: r.Term, To: to, Context: r.readOnly.lastReadRequest()})
+}
+
+func (r *Raft) sendReadIndexResp(ris *readIndexState) {
+	if ris.from == r.id || ris.from == None {
+		r.readStates = append(r.readStates, ris.rs)
+	} else {
+		r.send(pb.Message{MsgType: pb.MessageType_MsgReadIndexResponse, Index: ris.rs.ReadIndex, To: ris.from, Context: ris.rs.ReadRequest})
+	}
 }
 
 // sendRequestVote sends a requestvote RPC to the given peer.
@@ -322,7 +338,7 @@ func (r *Raft) becomeLeader() {
 		pr.Next = lastIndex + 1
 		pr.Match = 0
 	})
-
+	r.readOnly = newReadOnly()
 	// propose a noop entry
 	//r.appendEntries([]*pb.Entry{{Data: nil}})
 	_ = r.Step(pb.Message{MsgType: pb.MessageType_MsgPropose, Entries: []*pb.Entry{{Data: nil}}})
@@ -334,7 +350,7 @@ func (r *Raft) Step(m pb.Message) error {
 	// Your Code Here (2A).
 	if m.Term == 0 {
 		// local message
-		// MsgBeat || MsgHup || MsgPropose
+		// MsgBeat || MsgHup || MsgPropose || MsgReadIndex
 	} else if m.Term > r.Term {
 		if m.MsgType == pb.MessageType_MsgAppend || m.MsgType == pb.MessageType_MsgHeartbeat {
 			r.becomeFollower(m.Term, m.From)
@@ -346,7 +362,7 @@ func (r *Raft) Step(m pb.Message) error {
 		case pb.MessageType_MsgRequestVote:
 			r.send(pb.Message{MsgType: pb.MessageType_MsgRequestVoteResponse, Term: r.Term, To: m.From, Reject: true})
 		case pb.MessageType_MsgHeartbeat:
-			r.send(pb.Message{MsgType: pb.MessageType_MsgHeartbeatResponse, Term: r.Term, To: m.From})
+			r.send(pb.Message{MsgType: pb.MessageType_MsgHeartbeatResponse, Term: r.Term, To: m.From, Context: m.Context})
 		case pb.MessageType_MsgAppend:
 			r.send(pb.Message{MsgType: pb.MessageType_MsgAppendResponse, Term: r.Term, To: m.From, Reject: true})
 		}
@@ -368,11 +384,7 @@ func (r *Raft) Step(m pb.Message) error {
 func (r *Raft) stepFollower(m pb.Message) error {
 	switch m.MsgType {
 	case pb.MessageType_MsgPropose:
-		if r.Lead == None {
-			return ErrProposalDropped
-		}
-		m.To = r.Lead
-		r.send(m)
+		return ErrProposalDropped
 	case pb.MessageType_MsgHup:
 		r.campaign()
 	case pb.MessageType_MsgHeartbeat:
@@ -381,6 +393,17 @@ func (r *Raft) stepFollower(m pb.Message) error {
 		r.handleRequestVote(m)
 	case pb.MessageType_MsgAppend:
 		r.handleAppendEntries(m)
+	case pb.MessageType_MsgReadIndex:
+		if r.Lead == None {
+			return nil
+		}
+		m.To = r.Lead
+		r.send(m)
+	case pb.MessageType_MsgReadIndexResponse:
+		r.readStates = append(r.readStates, ReadState{
+			ReadIndex:   m.Index,
+			ReadRequest: m.Context,
+		})
 	}
 	return nil
 }
@@ -405,10 +428,6 @@ func (r *Raft) stepCandidate(m pb.Message) error {
 		win, lose := r.checkElection()
 		if win {
 			r.becomeLeader()
-			//r.eachPeer(func(id uint64, pr *Progress) {
-			//	r.sendAppend(id)
-			//})
-			//r.RaftLog.updateCommit(r.Term, r.Prs)
 		} else if lose {
 			r.becomeFollower(r.Term, None)
 		}
@@ -431,9 +450,25 @@ func (r *Raft) stepLeader(m pb.Message) error {
 	case pb.MessageType_MsgRequestVote:
 		r.handleRequestVote(m)
 	case pb.MessageType_MsgHeartbeatResponse:
-		// ignore now
+		r.handleHeartbeatResponse(m)
 	case pb.MessageType_MsgAppendResponse:
 		r.handleAppendEntriesResponse(m)
+	case pb.MessageType_MsgReadIndex:
+		commitIndexTerm, err := r.RaftLog.Term(r.RaftLog.committed)
+		if err != nil || commitIndexTerm != r.Term {
+			return nil
+		}
+		r.readOnly.addRequest(r.RaftLog.committed, &m)
+		if r.readOnly.recvAck(len(r.Prs), &m) {
+			riss := r.readOnly.advance(&m)
+			for _, ris := range riss {
+				r.sendReadIndexResp(ris)
+			}
+		} else {
+			r.eachPeer(func(id uint64, pr *Progress) {
+				r.sendHeartbeat(id)
+			})
+		}
 	}
 	return nil
 }
@@ -490,7 +525,23 @@ func (r *Raft) handleHeartbeat(m pb.Message) {
 	// Your Code Here (2A).
 	r.electionElapsed = 0
 	r.Lead = m.From
-	r.send(pb.Message{MsgType: pb.MessageType_MsgHeartbeatResponse, Term: r.Term, To: m.From})
+	r.send(pb.Message{MsgType: pb.MessageType_MsgHeartbeatResponse, Term: r.Term, To: m.From, Context: m.Context})
+}
+
+func (r *Raft) handleHeartbeatResponse(m pb.Message) {
+	pr := r.Prs[m.From]
+	if pr.Match < r.RaftLog.LastIndex() {
+		r.sendAppend(m.From)
+	}
+	if m.Context == nil || len(m.Context) == 0 {
+		return
+	}
+	if r.readOnly.recvAck(len(r.Prs), &m) {
+		riss := r.readOnly.advance(&m)
+		for _, ris := range riss {
+			r.sendReadIndexResp(ris)
+		}
+	}
 }
 
 // handleRequestVote handle RequestVote RPC request

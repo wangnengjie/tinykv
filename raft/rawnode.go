@@ -16,7 +16,6 @@ package raft
 
 import (
 	"errors"
-
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 )
 
@@ -64,6 +63,8 @@ type Ready struct {
 	// If it contains a MessageType_MsgSnapshot message, the application MUST report back to raft
 	// when the snapshot has been received or has failed by calling ReportSnapshot.
 	Messages []pb.Message
+
+	ReadStates []ReadState
 }
 
 // RawNode is a wrapper of Raft.
@@ -156,8 +157,10 @@ func (rn *RawNode) Ready() Ready {
 		Entries:          rn.Raft.RaftLog.unstableEntries(),
 		CommittedEntries: rn.Raft.RaftLog.nextEnts(),
 		Messages:         rn.Raft.msgs,
+		ReadStates:       rn.Raft.readStates,
 	}
-	rn.Raft.msgs = make([]pb.Message, 0)
+	rn.Raft.msgs = nil
+	rn.Raft.readStates = nil
 	soft := rn.Raft.SoftState()
 	hard := rn.Raft.HardState()
 	if soft.Lead != rn.prevSoftState.Lead || soft.RaftState != rn.prevSoftState.RaftState {
@@ -172,7 +175,7 @@ func (rn *RawNode) Ready() Ready {
 // HasReady called when RawNode user need to check if any Ready pending.
 func (rn *RawNode) HasReady() bool {
 	// Your Code Here (2A).
-	if len(rn.Raft.msgs) > 0 || rn.Raft.RaftLog.stabled != rn.Raft.RaftLog.LastIndex() || rn.Raft.RaftLog.committed != rn.Raft.RaftLog.applied {
+	if len(rn.Raft.msgs) > 0 || rn.Raft.RaftLog.stabled != rn.Raft.RaftLog.LastIndex() || rn.Raft.RaftLog.committed != rn.Raft.RaftLog.applied || len(rn.Raft.readStates) > 0 {
 		return true
 	}
 	soft := rn.Raft.SoftState()
@@ -219,4 +222,8 @@ func (rn *RawNode) GetProgress() map[uint64]Progress {
 // TransferLeader tries to transfer leadership to the given transferee.
 func (rn *RawNode) TransferLeader(transferee uint64) {
 	_ = rn.Raft.Step(pb.Message{MsgType: pb.MessageType_MsgTransferLeader, From: transferee})
+}
+
+func (rn *RawNode) ReadIndex(data []byte) {
+	_ = rn.Raft.Step(pb.Message{MsgType: pb.MessageType_MsgReadIndex, From: rn.Raft.id, Context: data})
 }

@@ -63,6 +63,12 @@ type proposal struct {
 	cb    *message.Callback
 }
 
+type readProposal struct {
+	term    uint64
+	readCmd []byte
+	cb      *message.Callback
+}
+
 type peer struct {
 	// The ticker of the peer, used to trigger
 	// * raft tick
@@ -83,7 +89,9 @@ type peer struct {
 
 	// Record the callback of the proposals
 	// (Used in 2B)
-	proposals []*proposal
+	proposals     []*proposal
+	readProposals []*readProposal
+	readRaftCmds  []raft.ReadState
 
 	// Index of last scheduled compacted raft log.
 	// (Used in 2C)

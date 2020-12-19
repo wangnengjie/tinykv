@@ -66,6 +66,10 @@ enum MessageType {
     // 'MessageType_MsgTimeoutNow' send from the leader to the leadership transfer target, to let
     // the transfer target timeout immediately and start a new election.
     MsgTimeoutNow = 12;
+    // 'MessageType_MsgReadIndex' send a readindex request to leader to get readindex.
+    MsgReadIndex = 13;
+    // 'MessageType_MsgReadIndexResponse' send by leader when the leader is leader(check by heartbeat)
+    MsgReadIndexResponse = 14;
 }
 
 message Message {
@@ -79,6 +83,7 @@ message Message {
     uint64 commit = 8;
     Snapshot snapshot = 9;
     bool reject = 10;
+    bytes context = 11;
 }
 
 // HardState contains the state of a node need to be peristed, including the current term, commit index 

@@ -103,7 +103,11 @@ func (l *RaftLog) LastIndex() uint64 {
 	if len(l.entries) > 0 {
 		return l.entries[len(l.entries)-1].Index
 	}
-	return 0
+	lastindex, err := l.storage.LastIndex()
+	if err != nil {
+		return 0
+	}
+	return lastindex
 }
 
 // FirstIndex return the first index of the log entries
