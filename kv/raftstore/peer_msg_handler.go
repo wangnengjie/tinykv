@@ -145,10 +145,31 @@ func (d *peerMsgHandler) process(entry *eraftpb.Entry, kvWB *engine_util.WriteBa
 	}
 	if req.AdminRequest != nil {
 		// process admin request
+		return nil, d.processAdminRequest(entry, req, kvWB)
 	} else if req.Requests != nil {
 		return nil, d.processRequest(entry, req, kvWB)
 	}
 	return nil, nil
+}
+
+func (d *peerMsgHandler) processAdminRequest(entry *eraftpb.Entry, req *raft_cmdpb.RaftCmdRequest, kvWB *engine_util.WriteBatch) *message.Callback {
+	cb := d.findCallBack(entry.Index, entry.Term)
+	//resp := newCmdResp()
+	switch req.AdminRequest.CmdType {
+	case raft_cmdpb.AdminCmdType_CompactLog:
+		compactIndex, compactTerm := req.AdminRequest.CompactLog.CompactIndex, req.AdminRequest.CompactLog.CompactTerm
+		if compactIndex >= d.LastCompactedIdx {
+			d.peerStorage.applyState.TruncatedState.Index = compactIndex
+			d.peerStorage.applyState.TruncatedState.Term = compactTerm
+			err := kvWB.SetMeta(meta.ApplyStateKey(d.regionId), d.peerStorage.applyState)
+			if err != nil {
+				panic(err)
+			}
+			// firstindex is not used in ScheduleCompact
+			d.ScheduleCompactLog(0, compactIndex)
+		}
+	}
+	return cb
 }
 
 func (d *peerMsgHandler) processRequest(entry *eraftpb.Entry, req *raft_cmdpb.RaftCmdRequest, kvWB *engine_util.WriteBatch) *message.Callback {
@@ -270,10 +291,27 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 	// Your Code Here (2B).
 	if msg.AdminRequest != nil {
 		// propose admin req
+		d.proposeAdminRequest(msg, cb)
 	}
 	if len(msg.Requests) != 0 {
 		// propose req
 		d.proposeRequest(msg, cb)
+	}
+}
+
+func (d *peerMsgHandler) proposeAdminRequest(msg *raft_cmdpb.RaftCmdRequest, cb *message.Callback) {
+	switch msg.AdminRequest.CmdType {
+	case raft_cmdpb.AdminCmdType_CompactLog:
+		data, err := msg.Marshal()
+		if err != nil {
+			panic(err)
+		}
+		nidx := d.nextProposalIndex()
+		err = d.RaftGroup.Propose(data)
+		if err != nil {
+			panic(err)
+		}
+		d.peer.proposals = append(d.peer.proposals, &proposal{index: nidx, term: d.Term(), cb: cb})
 	}
 }
 
@@ -304,11 +342,7 @@ func (d *peerMsgHandler) proposeRequest(msg *raft_cmdpb.RaftCmdRequest, cb *mess
 		}
 		buf.Write(data)
 		d.RaftGroup.ReadIndex(buf.Bytes())
-		d.peer.readProposals = append(d.peer.readProposals, &readProposal{
-			term:    d.Term(),
-			readCmd: buf.Bytes(),
-			cb:      cb,
-		})
+		d.peer.readProposals = append(d.peer.readProposals, &readProposal{term: d.Term(), readCmd: buf.Bytes(), cb: cb})
 	} else {
 		nidx := d.nextProposalIndex()
 		err = d.RaftGroup.Propose(data)
@@ -316,11 +350,7 @@ func (d *peerMsgHandler) proposeRequest(msg *raft_cmdpb.RaftCmdRequest, cb *mess
 			cb.Done(ErrResp(err))
 			return
 		}
-		d.peer.proposals = append(d.peer.proposals, &proposal{
-			index: nidx,
-			term:  d.Term(),
-			cb:    cb,
-		})
+		d.peer.proposals = append(d.peer.proposals, &proposal{index: nidx, term: d.Term(), cb: cb})
 	}
 }
 

@@ -77,6 +77,19 @@ func newLog(storage Storage) *RaftLog {
 // grow unlimitedly in memory
 func (l *RaftLog) maybeCompact() {
 	// Your Code Here (2C).
+	firstindex, err := l.storage.FirstIndex()
+	if err != nil {
+		panic(err)
+	}
+	if firstindex > l.FirstIndex() {
+		if len(l.entries) > 0 {
+			if firstindex > l.LastIndex() {
+				l.entries = nil
+			} else {
+				l.entries = l.entries[l.entIdx2slcIdx(firstindex):]
+			}
+		}
+	}
 }
 
 // unstableEntries return all the unstable entries
@@ -103,6 +116,9 @@ func (l *RaftLog) LastIndex() uint64 {
 	if len(l.entries) > 0 {
 		return l.entries[len(l.entries)-1].Index
 	}
+	if l.pendingSnapshot != nil {
+		return l.pendingSnapshot.Metadata.Index
+	}
 	lastindex, err := l.storage.LastIndex()
 	if err != nil {
 		return 0
@@ -122,24 +138,32 @@ func (l *RaftLog) FirstIndex() uint64 {
 func (l *RaftLog) Term(i uint64) (uint64, error) {
 	// Your Code Here (2A).
 	length := uint64(len(l.entries))
-	if length == 0 {
-		return 0, ErrUnavailable
+	if length > 0 && i-l.FirstIndex() >= 0 && i-l.FirstIndex() < length {
+		return l.entries[l.entIdx2slcIdx(i)].Term, nil
 	}
-	firstIndex := l.FirstIndex()
-	if i-firstIndex >= length || i-firstIndex < 0 {
-		return 0, ErrUnavailable
+	term, err := l.storage.Term(i)
+	if err != nil && !IsEmptySnap(l.pendingSnapshot) {
+		if i == l.pendingSnapshot.Metadata.Index {
+			return l.pendingSnapshot.Metadata.Term, nil
+		}
+		if i < l.pendingSnapshot.Metadata.Index {
+			return 0, ErrCompacted
+		}
 	}
-	return l.entries[l.entIdx2slcIdx(i)].Term, nil
+	return term, err
 }
 
 // return entries with index [left, lastindex].
 // if left > lastindex return nil
-func (l *RaftLog) getEntries(left uint64) []pb.Entry {
+func (l *RaftLog) getEntries(left uint64) ([]pb.Entry, error) {
+	if left < l.FirstIndex() {
+		return nil, ErrUnavailable
+	}
 	lastIndex := l.LastIndex()
 	if left > lastIndex || lastIndex == 0 {
-		return nil
+		return nil, nil
 	}
-	return l.entries[l.entIdx2slcIdx(left):]
+	return l.entries[l.entIdx2slcIdx(left):], nil
 }
 
 // append entries to raftlog
@@ -201,6 +225,23 @@ func (l *RaftLog) updateCommit(term uint64, prs map[uint64]*Progress) bool {
 		}
 	}
 	return false
+}
+
+func (l *RaftLog) handleSnapshot(snap *pb.Snapshot) {
+	snapIndex := snap.Metadata.Index
+	l.committed = snapIndex
+	l.stabled = snapIndex
+	l.applied = snapIndex
+	l.entries = nil
+	l.pendingSnapshot = snap
+}
+
+func (l *RaftLog) stableSnapshot(sindex uint64) {
+	//l.applied = sindex
+	//l.stabled = sindex
+	if !IsEmptySnap(l.pendingSnapshot) && l.pendingSnapshot.Metadata.Index == sindex {
+		l.pendingSnapshot = nil
+	}
 }
 
 func (l *RaftLog) entIdx2slcIdx(i uint64) int {
