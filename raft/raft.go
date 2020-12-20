@@ -28,10 +28,18 @@ const None uint64 = 0
 // StateType represents the role of a node in a cluster.
 type StateType uint64
 
+type SnapStateType uint64
+
 const (
 	StateFollower StateType = iota
 	StateCandidate
 	StateLeader
+)
+
+const (
+	SnapStateNormal SnapStateType = iota
+	SnapStateGenerating
+	SnapStateSending
 )
 
 var stmap = [...]string{
@@ -107,6 +115,7 @@ func (c *Config) validate() error {
 // progresses of all followers, and sends entries to the follower based on its progress.
 type Progress struct {
 	Match, Next uint64
+	SnapState   SnapStateType
 }
 
 type Raft struct {
@@ -176,6 +185,9 @@ func newRaft(c *Config) *Raft {
 	hardstate, confstate, _ := c.Storage.InitialState()
 	raftlog := newLog(c.Storage)
 	raftlog.committed = hardstate.Commit
+	if c.Applied != 0 {
+		raftlog.applied = c.Applied
+	}
 	peers := c.peers
 	if len(confstate.Nodes) != 0 {
 		peers = confstate.Nodes
@@ -281,6 +293,13 @@ func (r *Raft) sendRequestVote(to uint64, lastTerm uint64, lastIndex uint64) {
 }
 
 func (r *Raft) sendSnapShot(to uint64) bool {
+	pr := r.Prs[to]
+	if pr.SnapState == SnapStateSending {
+		return false
+	}
+	if pr.SnapState == SnapStateNormal {
+		pr.SnapState = SnapStateGenerating
+	}
 	snap, err := r.RaftLog.storage.Snapshot()
 	if err != nil {
 		if err == ErrSnapshotTemporarilyUnavailable {
@@ -288,13 +307,11 @@ func (r *Raft) sendSnapShot(to uint64) bool {
 		}
 		panic(err)
 	}
-	//if IsEmptySnap(&snap) {
-	//	panic("empty snapshot")
-	//}
 	r.send(pb.Message{MsgType: pb.MessageType_MsgSnapshot, Snapshot: &snap, To: to, Term: r.Term})
-	if !IsEmptySnap(&snap) {
-		r.Prs[to].Next = snap.Metadata.Index + 1
-	}
+	pr.SnapState = SnapStateSending
+	//if !IsEmptySnap(&snap) {
+	//	r.Prs[to].Next = snap.Metadata.Index + 1
+	//}
 	return true
 }
 
@@ -358,6 +375,7 @@ func (r *Raft) becomeLeader() {
 	r.eachPeer(func(_ uint64, pr *Progress) {
 		pr.Next = lastIndex + 1
 		pr.Match = 0
+		pr.SnapState = SnapStateNormal
 	})
 	r.readOnly = newReadOnly()
 	// propose a noop entry
@@ -538,6 +556,7 @@ func (r *Raft) handleAppendEntriesResponse(m pb.Message) {
 	} else {
 		pr.Next = m.Index + 1
 		pr.Match = m.Index
+		pr.SnapState = SnapStateNormal
 		// update commit
 		if r.RaftLog.updateCommit(r.Term, r.Prs) {
 			// broadcast commit update

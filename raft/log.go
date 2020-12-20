@@ -236,14 +236,6 @@ func (l *RaftLog) handleSnapshot(snap *pb.Snapshot) {
 	l.pendingSnapshot = snap
 }
 
-func (l *RaftLog) stableSnapshot(sindex uint64) {
-	//l.applied = sindex
-	//l.stabled = sindex
-	if !IsEmptySnap(l.pendingSnapshot) && l.pendingSnapshot.Metadata.Index == sindex {
-		l.pendingSnapshot = nil
-	}
-}
-
 func (l *RaftLog) entIdx2slcIdx(i uint64) int {
 	return int(i - l.FirstIndex())
 }

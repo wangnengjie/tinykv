@@ -51,7 +51,7 @@ func (d *peerMsgHandler) HandleRaftReady() {
 	// Your Code Here (2B).
 	if d.RaftGroup.HasReady() {
 		rd := d.RaftGroup.Ready()
-
+		d.peer.readRaftCmds = append(d.peer.readRaftCmds, rd.ReadStates...)
 		wg := sync.WaitGroup{}
 		wg.Add(1)
 		go d.handleApplyCommited(rd.CommittedEntries, &wg)
@@ -61,16 +61,14 @@ func (d *peerMsgHandler) HandleRaftReady() {
 			panic(err)
 		}
 		d.Send(d.ctx.trans, rd.Messages)
-		d.peer.readRaftCmds = append(d.peer.readRaftCmds, rd.ReadStates...)
-
 		wg.Wait()
-		d.handleReadOnlyCmd(d.peerStorage.applyState.AppliedIndex)
 		d.RaftGroup.Advance(rd)
 	}
 }
 
 func (d *peerMsgHandler) handleApplyCommited(entries []eraftpb.Entry, wg *sync.WaitGroup) {
 	if len(entries) == 0 {
+		d.handleReadOnlyCmd(d.peerStorage.applyState.AppliedIndex)
 		wg.Done()
 		return
 	}
@@ -97,6 +95,7 @@ func (d *peerMsgHandler) handleApplyCommited(entries []eraftpb.Entry, wg *sync.W
 	for _, cb := range cbs {
 		cb.Done(nil) // resp was set in process
 	}
+	d.handleReadOnlyCmd(d.peerStorage.applyState.AppliedIndex)
 	wg.Done()
 }
 
