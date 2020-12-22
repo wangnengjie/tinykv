@@ -155,15 +155,15 @@ type Raft struct {
 	heartbeatTimeout int
 	// baseline of election interval
 	electionTimeout int
-	// timeout to reset snapshot status
-	resentSnapshotTimeout int
+	// number of election timeout
+	randomElectionTimeout int
 	// number of ticks since it reached last heartbeatTimeout.
 	// only leader keeps heartbeatElapsed.
 	heartbeatElapsed int
 	// number of ticks since it reached last electionTimeout
 	electionElapsed int
-	// number of election timeout
-	randomElectionTimeout int
+	// number of ticks since transfer start
+	leaderTransferElasped int
 	// random
 	rand *rand.Rand
 
@@ -204,17 +204,16 @@ func newRaft(c *Config) *Raft {
 		peers = confstate.Nodes
 	}
 	r := &Raft{
-		id:                    c.ID,
-		Term:                  hardstate.Term,
-		Vote:                  hardstate.Vote,
-		RaftLog:               raftlog,
-		Prs:                   make(map[uint64]*Progress),
-		votes:                 make(map[uint64]bool),
-		heartbeatTimeout:      c.HeartbeatTick,
-		electionTimeout:       c.ElectionTick,
-		resentSnapshotTimeout: c.ElectionTick,
-		rand:                  rand.New(rand.NewSource(time.Now().UnixNano())),
-		readOnly:              newReadOnly(),
+		id:               c.ID,
+		Term:             hardstate.Term,
+		Vote:             hardstate.Vote,
+		RaftLog:          raftlog,
+		Prs:              make(map[uint64]*Progress),
+		votes:            make(map[uint64]bool),
+		heartbeatTimeout: c.HeartbeatTick,
+		electionTimeout:  c.ElectionTick,
+		rand:             rand.New(rand.NewSource(time.Now().UnixNano())),
+		readOnly:         newReadOnly(),
 	}
 	for _, id := range peers {
 		r.Prs[id] = &Progress{}
@@ -328,6 +327,10 @@ func (r *Raft) sendSnapshot(to uint64) bool {
 	return true
 }
 
+func (r *Raft) sendTimeoutNow(to uint64) {
+	r.send(pb.Message{MsgType: pb.MessageType_MsgTimeoutNow, To: to, Term: r.Term})
+}
+
 // tick advances the internal logical clock by a single tick.
 func (r *Raft) tick() {
 	// Your Code Here (2A).
@@ -336,16 +339,20 @@ func (r *Raft) tick() {
 		r.electionElapsed++
 		if r.electionElapsed >= r.randomElectionTimeout {
 			r.electionElapsed = 0
-			_ = r.Step(pb.Message{MsgType: pb.MessageType_MsgHup})
+			// should not becomeCandidate if not in group
+			if _, ok := r.Prs[r.id]; ok {
+				_ = r.Step(pb.Message{MsgType: pb.MessageType_MsgHup})
+			}
 		}
 	case StateLeader:
 		r.heartbeatElapsed++
 		r.electionElapsed++
+		r.leaderTransferElasped++
 		if r.heartbeatElapsed >= r.heartbeatTimeout {
 			r.heartbeatElapsed = 0
 			_ = r.Step(pb.Message{MsgType: pb.MessageType_MsgBeat})
 		}
-		if r.electionElapsed >= r.randomElectionTimeout {
+		if r.electionElapsed >= r.electionTimeout {
 			r.electionElapsed = 0
 			// reset recent active mode
 			r.eachPeer(func(id uint64, pr *Progress) {
@@ -353,12 +360,16 @@ func (r *Raft) tick() {
 			})
 			r.Prs[r.id].recentActive = true
 		}
+		if r.leaderTransferElasped >= r.electionTimeout {
+			r.leaderTransferElasped = 0
+			r.leadTransferee = None
+		}
 		r.eachPeer(func(id uint64, pr *Progress) {
 			if pr.SnapState == SnapStateSending {
 				pr.resentSnapshotTick++
 				// reset SnapState to recent a snapshot, since we don't have a method to
 				// check whether s snapshot is successfully sent
-				if pr.resentSnapshotTick >= r.resentSnapshotTimeout {
+				if pr.resentSnapshotTick >= r.electionTimeout {
 					pr.SnapState = SnapStateNormal
 				}
 			}
@@ -375,6 +386,8 @@ func (r *Raft) reset(term uint64) {
 	r.Lead = None
 	r.electionElapsed = 0
 	r.heartbeatElapsed = 0
+	r.leadTransferee = None
+	r.leaderTransferElasped = 0
 	r.randomElectionTimeout = r.electionTimeout + r.rand.Intn(r.electionTimeout)
 }
 
@@ -402,7 +415,7 @@ func (r *Raft) becomeLeader() {
 	// NOTE: Leader should propose a noop entry on its term
 	r.reset(r.Term)
 	r.State = StateLeader
-
+	r.Lead = r.id
 	lastIndex := r.RaftLog.LastIndex()
 	r.eachPeer(func(_ uint64, pr *Progress) {
 		pr.Next = lastIndex + 1
@@ -424,7 +437,7 @@ func (r *Raft) Step(m pb.Message) error {
 	// Your Code Here (2A).
 	if m.Term == 0 {
 		// local message
-		// MsgBeat || MsgHup || MsgPropose || MsgReadIndex
+		// MsgBeat || MsgHup || MsgPropose || MsgReadIndex || MsgTransferLeader
 	} else if m.Term > r.Term {
 		if m.MsgType == pb.MessageType_MsgAppend || m.MsgType == pb.MessageType_MsgHeartbeat || m.MsgType == pb.MessageType_MsgSnapshot {
 			r.becomeFollower(m.Term, m.From)
@@ -482,6 +495,16 @@ func (r *Raft) stepFollower(m pb.Message) error {
 			ReadIndex:   m.Index,
 			ReadRequest: m.Context,
 		})
+	case pb.MessageType_MsgTransferLeader:
+		if r.Lead != None {
+			m.To = r.Lead
+			r.send(m)
+		}
+	case pb.MessageType_MsgTimeoutNow:
+		// check whether current peer is in group
+		if _, ok := r.Prs[r.id]; ok {
+			r.campaign()
+		}
 	}
 	return nil
 }
@@ -512,6 +535,13 @@ func (r *Raft) stepCandidate(m pb.Message) error {
 		} else if lose {
 			r.becomeFollower(r.Term, None)
 		}
+	case pb.MessageType_MsgTransferLeader:
+		if r.Lead != None {
+			m.To = r.Lead
+			r.send(m)
+		}
+	case pb.MessageType_MsgTimeoutNow:
+		// peer is candidate now, so ignore it
 	}
 	return nil
 }
@@ -519,6 +549,9 @@ func (r *Raft) stepCandidate(m pb.Message) error {
 func (r *Raft) stepLeader(m pb.Message) error {
 	switch m.MsgType {
 	case pb.MessageType_MsgPropose:
+		if r.leadTransferee != None {
+			return ErrProposalDropped
+		}
 		r.appendEntries(m.Entries)
 		r.eachPeer(func(id uint64, _ *Progress) {
 			r.sendAppend(id)
@@ -552,6 +585,8 @@ func (r *Raft) stepLeader(m pb.Message) error {
 				r.sendHeartbeat(id)
 			})
 		}
+	case pb.MessageType_MsgTransferLeader:
+		r.handleTransferLeader(m.From)
 	}
 	return nil
 }
@@ -608,6 +643,9 @@ func (r *Raft) handleAppendEntriesResponse(m pb.Message) {
 			r.eachPeer(func(id uint64, pr *Progress) {
 				r.sendAppend(id)
 			})
+		}
+		if r.leadTransferee == m.From && pr.Match == r.RaftLog.LastIndex() {
+			r.sendTimeoutNow(r.leadTransferee)
 		}
 	}
 }
@@ -676,14 +714,54 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 	r.send(pb.Message{MsgType: pb.MessageType_MsgAppendResponse, Term: r.Term, To: m.From, Index: r.RaftLog.LastIndex()})
 }
 
+func (r *Raft) handleTransferLeader(transferee uint64) {
+	pr, ok := r.Prs[transferee]
+	if !ok || r.leadTransferee == transferee || transferee == r.id {
+		return
+	}
+	r.leadTransferee = transferee
+	r.leaderTransferElasped = 0
+	if pr.Match == r.RaftLog.LastIndex() {
+		r.sendTimeoutNow(transferee)
+	} else {
+		r.sendAppend(transferee)
+	}
+}
+
 // addNode add a new node to raft group
 func (r *Raft) addNode(id uint64) {
 	// Your Code Here (3A).
+	if _, ok := r.Prs[id]; !ok {
+		r.Prs[id] = &Progress{
+			Match:              0,
+			Next:               r.RaftLog.LastIndex() + 1,
+			SnapState:          SnapStateNormal,
+			pendingSnapIndex:   0,
+			resentSnapshotTick: 0,
+			recentActive:       true,
+		}
+	}
 }
 
 // removeNode remove a node from raft group
 func (r *Raft) removeNode(id uint64) {
 	// Your Code Here (3A).
+	rm := false
+	if _, ok := r.Prs[id]; ok {
+		rm = true
+		delete(r.Prs, id)
+	}
+	if _, ok := r.Prs[r.id]; ok && rm && r.State == StateLeader {
+		if r.RaftLog.updateCommit(r.Term, r.Prs) {
+			r.eachPeer(func(id uint64, pr *Progress) {
+				r.sendAppend(id)
+			})
+		}
+		if r.leadTransferee == id {
+			r.leadTransferee = None
+			r.leaderTransferElasped = 0
+		}
+	}
 }
 
 // traverse each peer
@@ -717,6 +795,14 @@ func (r *Raft) appendEntries(ents []*pb.Entry) {
 	for i := range ents {
 		ents[i].Term = r.Term
 		ents[i].Index = l + uint64(i)
+		if ents[i].EntryType == pb.EntryType_EntryConfChange {
+			if r.PendingConfIndex > r.RaftLog.applied {
+				ents[i].EntryType = pb.EntryType_EntryNormal
+				ents[i].Data = nil
+			} else {
+				r.PendingConfIndex = ents[i].Index
+			}
+		}
 	}
 	r.RaftLog.append(ents)
 	r.Prs[r.id].Match = r.RaftLog.LastIndex()
