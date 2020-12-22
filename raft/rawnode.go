@@ -171,7 +171,7 @@ func (rn *RawNode) Ready() Ready {
 	}
 	if !IsEmptySnap(rn.Raft.RaftLog.pendingSnapshot) {
 		ready.Snapshot = *rn.Raft.RaftLog.pendingSnapshot
-		rn.Raft.RaftLog.pendingSnapshot = nil
+		//rn.Raft.RaftLog.pendingSnapshot = nil
 	}
 	return ready
 }
@@ -211,6 +211,9 @@ func (rn *RawNode) Advance(rd Ready) {
 	}
 	if len(rd.Entries) > 0 {
 		rn.Raft.RaftLog.stabled = rd.Entries[len(rd.Entries)-1].Index
+	}
+	if !IsEmptySnap(&rd.Snapshot) {
+		rn.Raft.RaftLog.advanceSnapshot(rd.Snapshot.Metadata.Index)
 	}
 	rn.Raft.RaftLog.maybeCompact()
 }

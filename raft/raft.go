@@ -38,7 +38,6 @@ const (
 
 const (
 	SnapStateNormal SnapStateType = iota
-	SnapStateGenerating
 	SnapStateSending
 )
 
@@ -115,7 +114,17 @@ func (c *Config) validate() error {
 // progresses of all followers, and sends entries to the follower based on its progress.
 type Progress struct {
 	Match, Next uint64
-	SnapState   SnapStateType
+	// When a pr is under SnapStateSending mode we should not sent any new entry and new snapshot.
+	// This can avoid rebuild too many snapshot
+	SnapState        SnapStateType
+	pendingSnapIndex uint64
+	// Since tinykv does not have a SnapStatus msg(in etcd/tikv),
+	// we don't know whether a snapshot is successfully sent.
+	// use such a tick to make SnapStateSending back to SnapStateNormal
+	resentSnapshotTick int
+	// Check whether a peer is active. If not, do not sent snapshot.
+	// leader will reset recentActive state every electiontimeout
+	recentActive bool
 }
 
 type Raft struct {
@@ -146,6 +155,8 @@ type Raft struct {
 	heartbeatTimeout int
 	// baseline of election interval
 	electionTimeout int
+	// timeout to reset snapshot status
+	resentSnapshotTimeout int
 	// number of ticks since it reached last heartbeatTimeout.
 	// only leader keeps heartbeatElapsed.
 	heartbeatElapsed int
@@ -193,16 +204,17 @@ func newRaft(c *Config) *Raft {
 		peers = confstate.Nodes
 	}
 	r := &Raft{
-		id:               c.ID,
-		Term:             hardstate.Term,
-		Vote:             hardstate.Vote,
-		RaftLog:          raftlog,
-		Prs:              make(map[uint64]*Progress),
-		votes:            make(map[uint64]bool),
-		heartbeatTimeout: c.HeartbeatTick,
-		electionTimeout:  c.ElectionTick,
-		rand:             rand.New(rand.NewSource(time.Now().UnixNano())),
-		readOnly:         newReadOnly(),
+		id:                    c.ID,
+		Term:                  hardstate.Term,
+		Vote:                  hardstate.Vote,
+		RaftLog:               raftlog,
+		Prs:                   make(map[uint64]*Progress),
+		votes:                 make(map[uint64]bool),
+		heartbeatTimeout:      c.HeartbeatTick,
+		electionTimeout:       c.ElectionTick,
+		resentSnapshotTimeout: c.ElectionTick,
+		rand:                  rand.New(rand.NewSource(time.Now().UnixNano())),
+		readOnly:              newReadOnly(),
 	}
 	for _, id := range peers {
 		r.Prs[id] = &Progress{}
@@ -294,11 +306,12 @@ func (r *Raft) sendRequestVote(to uint64, lastTerm uint64, lastIndex uint64) {
 
 func (r *Raft) sendSnapShot(to uint64) bool {
 	pr := r.Prs[to]
-	if pr.SnapState == SnapStateSending {
+	//fmt.Println("raft id", r.id, "send snapshot to", to, "snapstate", pr.SnapState, "is active", pr.recentActive)
+	if !pr.recentActive {
 		return false
 	}
-	if pr.SnapState == SnapStateNormal {
-		pr.SnapState = SnapStateGenerating
+	if pr.SnapState == SnapStateSending {
+		return false
 	}
 	snap, err := r.RaftLog.storage.Snapshot()
 	if err != nil {
@@ -309,9 +322,8 @@ func (r *Raft) sendSnapShot(to uint64) bool {
 	}
 	r.send(pb.Message{MsgType: pb.MessageType_MsgSnapshot, Snapshot: &snap, To: to, Term: r.Term})
 	pr.SnapState = SnapStateSending
-	//if !IsEmptySnap(&snap) {
-	//	r.Prs[to].Next = snap.Metadata.Index + 1
-	//}
+	pr.pendingSnapIndex = snap.Metadata.Index
+	pr.resentSnapshotTick = 0
 	return true
 }
 
@@ -327,10 +339,26 @@ func (r *Raft) tick() {
 		}
 	case StateLeader:
 		r.heartbeatElapsed++
+		r.electionElapsed++
 		if r.heartbeatElapsed >= r.heartbeatTimeout {
 			r.heartbeatElapsed = 0
 			_ = r.Step(pb.Message{MsgType: pb.MessageType_MsgBeat})
 		}
+		if r.electionElapsed >= r.randomElectionTimeout {
+			r.electionElapsed = 0
+			r.eachPeer(func(id uint64, pr *Progress) {
+				pr.recentActive = false
+			})
+			r.Prs[r.id].recentActive = true
+		}
+		r.eachPeer(func(id uint64, pr *Progress) {
+			if pr.SnapState == SnapStateSending {
+				pr.resentSnapshotTick++
+				if pr.resentSnapshotTick >= r.resentSnapshotTimeout {
+					pr.SnapState = SnapStateNormal
+				}
+			}
+		})
 	}
 }
 
@@ -376,6 +404,9 @@ func (r *Raft) becomeLeader() {
 		pr.Next = lastIndex + 1
 		pr.Match = 0
 		pr.SnapState = SnapStateNormal
+		pr.pendingSnapIndex = 0
+		pr.recentActive = true
+		pr.resentSnapshotTick = 0
 	})
 	r.readOnly = newReadOnly()
 	// propose a noop entry
@@ -550,13 +581,18 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 
 func (r *Raft) handleAppendEntriesResponse(m pb.Message) {
 	pr := r.Prs[m.From]
+	pr.recentActive = true
 	if m.Reject {
 		pr.Next = m.Index + 1
 		r.sendAppend(m.From)
 	} else {
 		pr.Next = m.Index + 1
 		pr.Match = m.Index
-		pr.SnapState = SnapStateNormal
+		if pr.SnapState == SnapStateSending && pr.Match >= pr.pendingSnapIndex {
+			pr.SnapState = SnapStateNormal
+			pr.pendingSnapIndex = 0
+			pr.resentSnapshotTick = 0
+		}
 		// update commit
 		if r.RaftLog.updateCommit(r.Term, r.Prs) {
 			// broadcast commit update
@@ -577,6 +613,7 @@ func (r *Raft) handleHeartbeat(m pb.Message) {
 
 func (r *Raft) handleHeartbeatResponse(m pb.Message) {
 	pr := r.Prs[m.From]
+	pr.recentActive = true
 	if pr.Match < r.RaftLog.LastIndex() {
 		r.sendAppend(m.From)
 	}

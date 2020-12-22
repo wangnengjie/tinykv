@@ -230,10 +230,18 @@ func (l *RaftLog) updateCommit(term uint64, prs map[uint64]*Progress) bool {
 func (l *RaftLog) handleSnapshot(snap *pb.Snapshot) {
 	snapIndex := snap.Metadata.Index
 	l.committed = snapIndex
-	l.stabled = snapIndex
-	l.applied = snapIndex
+	//l.stabled = snapIndex
+	//l.applied = snapIndex
 	l.entries = nil
 	l.pendingSnapshot = snap
+}
+
+func (l *RaftLog) advanceSnapshot(sindex uint64) {
+	l.stabled = max(l.stabled, sindex)
+	l.applied = max(l.applied, sindex)
+	if !IsEmptySnap(l.pendingSnapshot) && l.pendingSnapshot.Metadata.Index == sindex {
+		l.pendingSnapshot = nil
+	}
 }
 
 func (l *RaftLog) entIdx2slcIdx(i uint64) int {
