@@ -260,7 +260,7 @@ func (r *Raft) sendAppend(to uint64) bool {
 	prevLogTerm, err := r.RaftLog.Term(prevLogIndex)
 	ents, errget := r.RaftLog.getEntries(pr.Next)
 	if prevLogIndex != None && (err != nil || errget != nil) {
-		return r.sendSnapShot(to)
+		return r.sendSnapshot(to)
 	}
 	entries := make([]*pb.Entry, 0, len(ents))
 	for i := range ents {
@@ -288,6 +288,9 @@ func (r *Raft) sendHeartbeat(to uint64) {
 	r.send(pb.Message{MsgType: pb.MessageType_MsgHeartbeat, Term: r.Term, To: to, Context: r.readOnly.lastReadRequest()})
 }
 
+// sendReadIndexResp sends readindex RPC with readindex to peer.
+// Currently in tinykv, Read Req is only sent to leader,
+// so readIndexState's from field must be leader
 func (r *Raft) sendReadIndexResp(ris *readIndexState) {
 	if ris.from == r.id || ris.from == None {
 		r.readStates = append(r.readStates, ris.rs)
@@ -304,13 +307,11 @@ func (r *Raft) sendRequestVote(to uint64, lastTerm uint64, lastIndex uint64) {
 	r.send(pb.Message{MsgType: pb.MessageType_MsgRequestVote, Term: r.Term, To: to, LogTerm: lastTerm, Index: lastIndex})
 }
 
-func (r *Raft) sendSnapShot(to uint64) bool {
+// sendSnapshot send snapshot to given peer, return true if readlly send a snapshot.
+func (r *Raft) sendSnapshot(to uint64) bool {
 	pr := r.Prs[to]
 	//fmt.Println("raft id", r.id, "send snapshot to", to, "snapstate", pr.SnapState, "is active", pr.recentActive)
-	if !pr.recentActive {
-		return false
-	}
-	if pr.SnapState == SnapStateSending {
+	if !pr.recentActive || pr.SnapState == SnapStateSending {
 		return false
 	}
 	snap, err := r.RaftLog.storage.Snapshot()
@@ -346,6 +347,7 @@ func (r *Raft) tick() {
 		}
 		if r.electionElapsed >= r.randomElectionTimeout {
 			r.electionElapsed = 0
+			// reset recent active mode
 			r.eachPeer(func(id uint64, pr *Progress) {
 				pr.recentActive = false
 			})
@@ -354,6 +356,8 @@ func (r *Raft) tick() {
 		r.eachPeer(func(id uint64, pr *Progress) {
 			if pr.SnapState == SnapStateSending {
 				pr.resentSnapshotTick++
+				// reset SnapState to recent a snapshot, since we don't have a method to
+				// check whether s snapshot is successfully sent
 				if pr.resentSnapshotTick >= r.resentSnapshotTimeout {
 					pr.SnapState = SnapStateNormal
 				}
@@ -532,11 +536,13 @@ func (r *Raft) stepLeader(m pb.Message) error {
 		r.handleAppendEntriesResponse(m)
 	case pb.MessageType_MsgReadIndex:
 		commitIndexTerm, err := r.RaftLog.Term(r.RaftLog.committed)
+		// reject readIndex when leader does not have lastest commit index
 		if err != nil || commitIndexTerm != r.Term {
 			return nil
 		}
 		r.readOnly.addRequest(r.RaftLog.committed, &m)
 		if r.readOnly.recvAck(len(r.Prs), &m) {
+			// if there is only one peer in region, read req will advance immediately
 			riss := r.readOnly.advance(&m)
 			for _, ris := range riss {
 				r.sendReadIndexResp(ris)
@@ -579,6 +585,9 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 	})
 }
 
+// handleAppendEntriesResponse handle AppendEntries RPC response.
+// Update commit index or if conflict, resent sendAppend.
+// If a follower successfully install snapshot, handle it
 func (r *Raft) handleAppendEntriesResponse(m pb.Message) {
 	pr := r.Prs[m.From]
 	pr.recentActive = true
@@ -611,6 +620,8 @@ func (r *Raft) handleHeartbeat(m pb.Message) {
 	r.send(pb.Message{MsgType: pb.MessageType_MsgHeartbeatResponse, Term: r.Term, To: m.From, Context: m.Context})
 }
 
+// handleHeartbeatResponse handle heartbeat resp.
+// leader can check whether it can communicate with most of peers and so advance readindex
 func (r *Raft) handleHeartbeatResponse(m pb.Message) {
 	pr := r.Prs[m.From]
 	pr.recentActive = true

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
-	"sync"
 	"time"
 
 	"github.com/Connor1996/badger/y"
@@ -52,24 +51,27 @@ func (d *peerMsgHandler) HandleRaftReady() {
 	if d.RaftGroup.HasReady() {
 		rd := d.RaftGroup.Ready()
 		d.peer.readRaftCmds = append(d.peer.readRaftCmds, rd.ReadStates...)
-		wg := sync.WaitGroup{}
-		wg.Add(1)
-		go d.handleApplyCommited(rd.CommittedEntries, &wg)
+		ch := make(chan struct{})
+		// apply entry Asynchronously.
+		// base on tinykv's code frame, it is a little bit difficult to use a standalone
+		// goroutine to handle apply. Maybe I will do this later
+		// Todo: shall we apply entry when this ready has snapshot to install?
+		go d.handleApplyCommited(rd.CommittedEntries, ch)
 
 		_, err := d.peerStorage.SaveReadyState(&rd)
 		if err != nil {
 			panic(err)
 		}
 		d.Send(d.ctx.trans, rd.Messages)
-		wg.Wait()
+		<-ch
 		d.RaftGroup.Advance(rd)
 	}
 }
 
-func (d *peerMsgHandler) handleApplyCommited(entries []eraftpb.Entry, wg *sync.WaitGroup) {
+func (d *peerMsgHandler) handleApplyCommited(entries []eraftpb.Entry, ch chan<- struct{}) {
 	if len(entries) == 0 {
 		d.handleReadOnlyCmd(d.peerStorage.applyState.AppliedIndex)
-		wg.Done()
+		ch <- struct{}{}
 		return
 	}
 	kvWB := &engine_util.WriteBatch{}
@@ -96,9 +98,10 @@ func (d *peerMsgHandler) handleApplyCommited(entries []eraftpb.Entry, wg *sync.W
 		cb.Done(nil) // resp was set in process
 	}
 	d.handleReadOnlyCmd(d.peerStorage.applyState.AppliedIndex)
-	wg.Done()
+	ch <- struct{}{}
 }
 
+// handleReadOnlyCmd handle read requests that have readindex less than appliedIndex
 func (d *peerMsgHandler) handleReadOnlyCmd(appliedIndex uint64) {
 	for len(d.peer.readRaftCmds) != 0 && d.peer.readRaftCmds[0].ReadIndex <= appliedIndex {
 		data := d.peer.readRaftCmds[0].ReadRequest
@@ -197,6 +200,9 @@ func (d *peerMsgHandler) findCallBack(index, term uint64) *message.Callback {
 			return nil
 		}
 		prop := d.peer.proposals[0]
+		if term < prop.term {
+			return nil
+		}
 		d.peer.proposals = d.peer.proposals[1:]
 		if prop.term == term && prop.index == index {
 			return prop.cb

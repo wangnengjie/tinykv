@@ -235,6 +235,7 @@ func (rn *RawNode) TransferLeader(transferee uint64) {
 	_ = rn.Raft.Step(pb.Message{MsgType: pb.MessageType_MsgTransferLeader, From: transferee})
 }
 
+// ReadIndex tries to get a readindex for a readonly command
 func (rn *RawNode) ReadIndex(data []byte) {
 	_ = rn.Raft.Step(pb.Message{MsgType: pb.MessageType_MsgReadIndex, From: rn.Raft.id, Context: data})
 }
