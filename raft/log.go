@@ -16,6 +16,7 @@ package raft
 
 import (
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
+	"sort"
 )
 
 // RaftLog manage the log entries, its struct look like:
@@ -213,16 +214,16 @@ func (l *RaftLog) appendEntries(prevLogTerm uint64, prevLogIndex uint64, leaderC
 // call by leader to update commit.
 // return true if commit update
 func (l *RaftLog) updateCommit(term uint64, prs map[uint64]*Progress) bool {
-	for index, count, threshold := l.LastIndex(), 0, len(prs)/2; index > l.committed; index, count = index-1, 0 {
-		for _, pr := range prs {
-			if pr.Match >= index {
-				count++
-				if count > threshold && l.entries[l.entIdx2slcIdx(index)].Term == term {
-					l.committed = index
-					return true
-				}
-			}
-		}
+	matches := make(uint64Slice, 0, len(prs))
+	for _, pr := range prs {
+		matches = append(matches, pr.Match)
+	}
+	sort.Sort(matches)
+	//if len(prs) == 1......
+	index := matches[(len(prs)-1)/2]
+	if index > l.committed && l.entries[l.entIdx2slcIdx(index)].Term == term {
+		l.committed = index
+		return true
 	}
 	return false
 }
