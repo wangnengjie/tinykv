@@ -258,7 +258,7 @@ func (r *Raft) sendAppend(to uint64) bool {
 	prevLogIndex := pr.Next - 1
 	prevLogTerm, err := r.RaftLog.Term(prevLogIndex)
 	ents, errget := r.RaftLog.getEntries(pr.Next)
-	if prevLogIndex != None && (err != nil || errget != nil) {
+	if err != nil || errget != nil {
 		return r.sendSnapshot(to)
 	}
 	entries := make([]*pb.Entry, 0, len(ents))
@@ -355,9 +355,16 @@ func (r *Raft) tick() {
 		if r.electionElapsed >= r.electionTimeout {
 			r.electionElapsed = 0
 			// reset recent active mode
+			count := 0
 			r.eachPeer(func(id uint64, pr *Progress) {
+				if pr.recentActive {
+					count++
+				}
 				pr.recentActive = false
 			})
+			if count <= len(r.Prs)/2 {
+				r.becomeFollower(r.Term, None)
+			}
 			r.Prs[r.id].recentActive = true
 		}
 		if r.leaderTransferElasped >= r.electionTimeout {

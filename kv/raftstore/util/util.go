@@ -205,3 +205,16 @@ func RegionEqual(l, r *metapb.Region) bool {
 	}
 	return l.Id == r.Id && l.RegionEpoch.Version == r.RegionEpoch.Version && l.RegionEpoch.ConfVer == r.RegionEpoch.ConfVer
 }
+
+func GetKeyInRequest(req *raft_cmdpb.Request) []byte {
+	switch req.CmdType {
+	case raft_cmdpb.CmdType_Get:
+		return req.Get.Key
+	case raft_cmdpb.CmdType_Delete:
+		return req.Delete.Key
+	case raft_cmdpb.CmdType_Put:
+		return req.Put.Key
+	default:
+		return nil
+	}
+}
