@@ -72,11 +72,10 @@ func (d *peerMsgHandler) HandleRaftReady() {
 		if snapApplyRes != nil {
 			d.ctx.storeMeta.Lock()
 			d.SetRegion(snapApplyRes.Region)
-			delete(d.ctx.storeMeta.regions, snapApplyRes.PrevRegion.Id)
-			d.ctx.storeMeta.regions[snapApplyRes.Region.Id] = snapApplyRes.Region
-			if d.isInitialized() {
+			if len(snapApplyRes.PrevRegion.Peers) > 0 {
 				d.ctx.storeMeta.regionRanges.Delete(&regionItem{region: snapApplyRes.PrevRegion})
 			}
+			d.ctx.storeMeta.regions[snapApplyRes.Region.Id] = snapApplyRes.Region
 			d.ctx.storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: snapApplyRes.Region})
 			d.ctx.storeMeta.Unlock()
 		}
@@ -244,33 +243,30 @@ func (d *peerMsgHandler) processAdminRequest(entry *eraftpb.Entry, req *raft_cmd
 		switch changeReerCmd.ChangeType {
 		case eraftpb.ConfChangeType_AddNode:
 			if idx == len(region.Peers) { // if not found in region peers
+				d.ctx.storeMeta.Lock()
 				region.Peers = append(region.Peers, changeReerCmd.Peer)
 				region.RegionEpoch.ConfVer++
-				d.ctx.storeMeta.Lock()
-				d.ctx.storeMeta.regions[region.Id] = region
-				d.ctx.storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: region})
+				d.ctx.storeMeta.setRegion(region, d.peer)
 				d.ctx.storeMeta.Unlock()
 				meta.WriteRegionState(kvWB, region, rspb.PeerState_Normal)
 				d.insertPeerCache(changeReerCmd.Peer)
 			}
 		case eraftpb.ConfChangeType_RemoveNode:
 			if idx != len(region.Peers) { // if found in region peers
+				d.ctx.storeMeta.Lock()
+				region.Peers = append(region.Peers[:idx], region.Peers[idx+1:]...)
+				region.RegionEpoch.ConfVer++
+				d.ctx.storeMeta.setRegion(region, d.peer)
+				d.ctx.storeMeta.Unlock()
+				meta.WriteRegionState(kvWB, region, rspb.PeerState_Normal)
 				if d.peer.Meta.Id == changeReerCmd.Peer.Id {
 					d.destroyPeer()
 					return cb
 				}
-				region.Peers = append(region.Peers[:idx], region.Peers[idx+1:]...)
-				region.RegionEpoch.ConfVer++
-				d.ctx.storeMeta.Lock()
-				d.ctx.storeMeta.regions[region.Id] = region
-				d.ctx.storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: region})
-				d.ctx.storeMeta.Unlock()
-				meta.WriteRegionState(kvWB, region, rspb.PeerState_Normal)
 				// since we process msg async, msg that make target peer to destroy itself might not sent, if we remove cache
 				//d.removePeerCache(changeReerCmd.Peer.Id)
 			}
 		}
-		d.SetRegion(region)
 		var cc eraftpb.ConfChange
 		_ = cc.Unmarshal(entry.Data)
 		d.RaftGroup.ApplyConfChange(cc)
@@ -311,9 +307,13 @@ func (d *peerMsgHandler) processAdminRequest(entry *eraftpb.Entry, req *raft_cmd
 		if err != nil {
 			panic(err)
 		}
+		for _, p := range newPeers {
+			newPeer.insertPeerCache(p)
+		}
+		newPeer.HeartbeatScheduler(d.ctx.schedulerTaskSender)
 		d.ctx.router.register(newPeer)
 		// see in startworkers & maybeCreateWorkers
-		_ = d.ctx.router.send(newRegion.Id, message.Msg{Type: message.MsgTypeStart, RegionID: newRegion.Id})
+		_ = d.ctx.router.send(newRegion.Id, message.Msg{Type: message.MsgTypeStart})
 		if d.IsLeader() {
 			d.HeartbeatScheduler(d.ctx.schedulerTaskSender)
 		}
