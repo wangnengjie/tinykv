@@ -130,10 +130,7 @@ func (s *balanceRegionScheduler) Schedule(cluster opt.Cluster) *operator.Operato
 		return nil
 	}
 	var targetStore *core.StoreInfo
-	for i, storeIds := len(suitableStores)-1, region.GetStoreIds(); i >= 0; i-- {
-		if suitableStores[i].GetID() == sourceStore.GetID() {
-			break
-		}
+	for i, storeIds := len(suitableStores)-1, region.GetStoreIds(); i >= 0 && suitableStores[i].GetID() != sourceStore.GetID(); i-- {
 		if _, ok := storeIds[suitableStores[i].GetID()]; !ok {
 			targetStore = suitableStores[i]
 			break
