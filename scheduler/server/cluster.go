@@ -277,9 +277,58 @@ func (c *RaftCluster) handleStoreHeartbeat(stats *schedulerpb.StoreStats) error 
 }
 
 // processRegionHeartbeat updates the region information.
-func (c *RaftCluster) processRegionHeartbeat(region *core.RegionInfo) error {
+func (c *RaftCluster) processRegionHeartbeat(region *core.RegionInfo) (err error) {
 	// Your Code Here (3C).
+	epoch := region.GetRegionEpoch()
+	var oldRegion *core.RegionInfo
+	var oldEpoch *metapb.RegionEpoch
+	c.RLock()
+	if oldRegion = c.GetRegion(region.GetID()); oldRegion != nil {
+		oldEpoch = oldRegion.GetRegionEpoch()
+		if epoch.GetConfVer() < oldEpoch.GetConfVer() || epoch.GetVersion() < oldEpoch.GetVersion() {
+			err = ErrRegionIsStale(region.GetMeta(), oldRegion.GetMeta())
+		}
+	} else {
+		overlapRegions := c.core.GetOverlaps(region)
+		for _, rg := range overlapRegions {
+			rgEpoch := rg.GetRegionEpoch()
+			if epoch.GetConfVer() < rgEpoch.GetConfVer() || epoch.GetVersion() < rgEpoch.GetVersion() {
+				err = ErrRegionIsStale(region.GetMeta(), rg.GetMeta())
+				break
+			}
+		}
+	}
+	c.RUnlock()
+	if err != nil {
+		return err
+	}
 
+	if oldRegion == nil {
+		goto UPDATE
+	}
+	if epoch.GetVersion() > oldEpoch.GetVersion() || epoch.GetConfVer() > oldEpoch.GetConfVer() {
+		goto UPDATE
+	}
+	if region.GetLeader().GetId() != oldRegion.GetLeader().GetId() {
+		goto UPDATE
+	}
+	if region.GetApproximateSize() != oldRegion.GetApproximateSize() {
+		goto UPDATE
+	}
+	if len(oldRegion.GetPendingPeers()) > 0 || len(region.GetPendingPeers()) > 0 {
+		goto UPDATE
+	}
+	if len(region.GetPeers()) != len(oldRegion.GetPeers()) {
+		goto UPDATE
+	}
+	return nil
+UPDATE:
+	c.Lock()
+	defer c.Unlock()
+	c.core.PutRegion(region)
+	for storeId := range region.GetStoreIds() {
+		c.updateStoreStatusLocked(storeId)
+	}
 	return nil
 }
 
