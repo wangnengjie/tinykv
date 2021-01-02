@@ -271,6 +271,9 @@ func (d *peerMsgHandler) processAdminRequest(entry *eraftpb.Entry, req *raft_cmd
 		_ = cc.Unmarshal(entry.Data)
 		d.RaftGroup.ApplyConfChange(cc)
 		resp.AdminResponse = &raft_cmdpb.AdminResponse{CmdType: raft_cmdpb.AdminCmdType_ChangePeer, ChangePeer: &raft_cmdpb.ChangePeerResponse{Region: d.Region()}}
+		if d.IsLeader() {
+			d.HeartbeatScheduler(d.ctx.schedulerTaskSender)
+		}
 	case raft_cmdpb.AdminCmdType_Split:
 		region := d.Region()
 		split := req.AdminRequest.Split
