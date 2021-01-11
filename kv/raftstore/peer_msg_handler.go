@@ -231,25 +231,25 @@ func (d *peerMsgHandler) processAdminRequest(entry *eraftpb.Entry, req *raft_cmd
 			d.ScheduleCompactLog(0, compactIndex)
 		}
 	case raft_cmdpb.AdminCmdType_ChangePeer:
-		changeReerCmd := req.AdminRequest.ChangePeer
+		changePeerCmd := req.AdminRequest.ChangePeer
 		region := d.Region() // pointer
 		idx := len(region.Peers)
 		for i, p := range region.Peers {
-			if p.Id == changeReerCmd.Peer.Id && p.StoreId == changeReerCmd.Peer.StoreId {
+			if p.Id == changePeerCmd.Peer.Id && p.StoreId == changePeerCmd.Peer.StoreId {
 				idx = i
 				break
 			}
 		}
-		switch changeReerCmd.ChangeType {
+		switch changePeerCmd.ChangeType {
 		case eraftpb.ConfChangeType_AddNode:
 			if idx == len(region.Peers) { // if not found in region peers
 				d.ctx.storeMeta.Lock()
-				region.Peers = append(region.Peers, changeReerCmd.Peer)
+				region.Peers = append(region.Peers, changePeerCmd.Peer)
 				region.RegionEpoch.ConfVer++
 				d.ctx.storeMeta.setRegion(region, d.peer)
 				d.ctx.storeMeta.Unlock()
 				meta.WriteRegionState(kvWB, region, rspb.PeerState_Normal)
-				d.insertPeerCache(changeReerCmd.Peer)
+				d.insertPeerCache(changePeerCmd.Peer)
 			}
 		case eraftpb.ConfChangeType_RemoveNode:
 			if idx != len(region.Peers) { // if found in region peers
@@ -259,12 +259,12 @@ func (d *peerMsgHandler) processAdminRequest(entry *eraftpb.Entry, req *raft_cmd
 				d.ctx.storeMeta.setRegion(region, d.peer)
 				d.ctx.storeMeta.Unlock()
 				meta.WriteRegionState(kvWB, region, rspb.PeerState_Normal)
-				if d.peer.Meta.Id == changeReerCmd.Peer.Id {
+				if d.peer.Meta.Id == changePeerCmd.Peer.Id {
 					d.destroyPeer()
 					return cb
 				}
 				// since we process msg async, msg that make target peer to destroy itself might not sent, if we remove cache
-				//d.removePeerCache(changeReerCmd.Peer.Id)
+				//d.removePeerCache(changePeerCmd.Peer.Id)
 			}
 		}
 		var cc eraftpb.ConfChange
