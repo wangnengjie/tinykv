@@ -23,14 +23,15 @@ func newApplyWorker(ctx *GlobalContext) *applyWorker {
 	}
 }
 
-func (aw *applyWorker) run(closeCh <-chan struct{}, wg *sync.WaitGroup) {
+func (aw *applyWorker) run(wg *sync.WaitGroup) {
 	defer wg.Done()
 	var msg *message.Msg
 	for {
 		select {
-		case <-closeCh:
-			return
 		case msg = <-aw.applyCh:
+			if msg == nil {
+				return
+			}
 			if msg.Type != message.MsgTypeApply {
 				panic(fmt.Sprintf("msg type should be %d but get %d", message.MsgTypeApply, msg.Type))
 			}

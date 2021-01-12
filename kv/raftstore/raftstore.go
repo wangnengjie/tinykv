@@ -271,7 +271,7 @@ func (bs *Raftstore) startWorkers(peers []*peer) {
 	sw := newStoreWorker(ctx, bs.storeState)
 	go sw.run(bs.closeCh, bs.wg)
 	aw := newApplyWorker(ctx)
-	go aw.run(bs.closeCh, bs.wg)
+	go aw.run(bs.wg)
 	router.sendStore(message.Msg{Type: message.MsgTypeStoreStart, Data: ctx.store})
 	for i := 0; i < len(peers); i++ {
 		regionID := peers[i].regionId
@@ -288,6 +288,7 @@ func (bs *Raftstore) startWorkers(peers []*peer) {
 
 func (bs *Raftstore) shutDown() {
 	close(bs.closeCh)
+	bs.router.sendApply(nil)
 	bs.wg.Wait()
 	bs.tickDriver.stop()
 	if bs.workers == nil {

@@ -57,6 +57,7 @@ func (d *peerMsgHandler) HandleRaftReady() {
 		if err != nil {
 			panic(err)
 		}
+		d.Send(d.ctx.trans, rd.Messages)
 		if snapApplyRes != nil {
 			d.ctx.storeMeta.Lock()
 			d.ctx.storeMeta.setRegion(snapApplyRes.Region, d.peer)
@@ -65,8 +66,8 @@ func (d *peerMsgHandler) HandleRaftReady() {
 			}
 			d.ctx.storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: snapApplyRes.Region})
 			d.ctx.storeMeta.Unlock()
+			d.LastApplyingIndex = d.peerStorage.AppliedIndex()
 		}
-		d.Send(d.ctx.trans, rd.Messages)
 		msg := &MsgApply{
 			Update:        snapApplyRes != nil,
 			Term:          d.Term(),
@@ -78,7 +79,7 @@ func (d *peerMsgHandler) HandleRaftReady() {
 		}
 		d.proposals = nil
 		d.readProposals = nil
-		if len(rd.CommittedEntries) != 0 {
+		if len(rd.CommittedEntries) != 0 && d.LastApplyingIndex < rd.CommittedEntries[len(rd.CommittedEntries)-1].Index {
 			d.LastApplyingIndex = rd.CommittedEntries[len(rd.CommittedEntries)-1].Index
 		}
 		d.ctx.router.sendApply(&message.Msg{Type: message.MsgTypeApply, Data: msg, RegionID: d.regionId})
@@ -508,8 +509,7 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 	if msg.AdminRequest != nil {
 		// propose admin req
 		d.proposeAdminRequest(msg, cb)
-	}
-	if len(msg.Requests) != 0 {
+	} else {
 		// propose req
 		d.proposeRequest(msg, cb)
 	}
@@ -988,15 +988,12 @@ func (d *peerMsgHandler) onApplyResult(msg *MsgApplyRes) {
 	} else {
 		d.peer.SizeDiffHint = 0
 	}
-	shouldHeartBeat := false
-	shouldDestroy := false
 	for _, res := range msg.ProcessRes {
 		switch res.Type {
 		case ProcessTypeCompactRes:
 			payload := res.paylod.(*ProcessCompactRes)
 			d.ScheduleCompactLog(payload.firstIndex, payload.truncatedIndex)
 		case ProcessTypeSplitRes:
-			shouldHeartBeat = true
 			payload := res.paylod.(*ProcessSplitRegionRes)
 			d.ctx.storeMeta.Lock()
 			d.ctx.storeMeta.regionRanges.Delete(&regionItem{region: d.Region()})
@@ -1013,13 +1010,14 @@ func (d *peerMsgHandler) onApplyResult(msg *MsgApplyRes) {
 				newPeer.insertPeerCache(p)
 			}
 			if d.IsLeader() {
+				d.HeartbeatScheduler(d.ctx.schedulerTaskSender)
 				newPeer.HeartbeatScheduler(d.ctx.schedulerTaskSender)
 			}
 			d.ctx.router.register(newPeer)
 			// see in startworkers & maybeCreateWorkers
 			_ = d.ctx.router.send(payload.newRegion.Id, message.Msg{Type: message.MsgTypeStart})
+			d.ApproximateSize = nil
 		case ProcessTypeConfChangeRes:
-			shouldHeartBeat = true
 			payload := res.paylod.(*ProcessConfChangeRes)
 			cc := payload.confChange
 			d.ctx.storeMeta.Lock()
@@ -1038,18 +1036,15 @@ func (d *peerMsgHandler) onApplyResult(msg *MsgApplyRes) {
 				if d.IsLeader() {
 					delete(d.PeersStartPendingTime, payload.peer.Id)
 				}
-				if payload.peer.Id == d.PeerId() {
-					shouldDestroy = true
-				}
 			}
 			d.peer.RaftGroup.ApplyConfChange(*cc)
+			if d.IsLeader() {
+				d.HeartbeatScheduler(d.ctx.schedulerTaskSender)
+			}
+			if cc.ChangeType == eraftpb.ConfChangeType_RemoveNode && cc.NodeId == d.PeerId() {
+				d.destroyPeer()
+			}
 		}
-	}
-	if shouldHeartBeat && d.IsLeader() {
-		d.HeartbeatScheduler(d.ctx.schedulerTaskSender)
-	}
-	if shouldDestroy {
-		d.destroyPeer()
 	}
 }
 

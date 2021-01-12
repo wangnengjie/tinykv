@@ -87,16 +87,16 @@ func newApplyMsgHandler(applier *applier, router *router, engine *engine_util.En
 }
 
 func (a *applyMsgHandler) HandleApplyMsg(msg *MsgApply) {
+	a.applier.setRegion(msg.Region)
+	a.applier.appendProposals(msg.Proposals)
+	a.applier.appendReadProposals(msg.ReadProposals)
+	a.applier.appendReadCmds(msg.ReadCmds)
 	// after apply a snapshot, Update will set to true.
 	// We ensure that every penging apply task for that region
 	// will be done before apply the snapshot.
 	if msg.Update {
 		a.applier.update(msg.Term)
 	}
-	a.applier.setRegion(msg.Region)
-	a.applier.appendProposals(msg.Proposals)
-	a.applier.appendReadProposals(msg.ReadProposals)
-	a.applier.appendReadCmds(msg.ReadCmds)
 	if a.applier.shouldRemove {
 		a.applier.notifyStale(msg.Term)
 		return
@@ -116,21 +116,14 @@ func (a *applyMsgHandler) HandleApplyMsg(msg *MsgApply) {
 	if err != nil {
 		panic(err)
 	}
-	state := rspb.PeerState_Normal
-	if a.applier.shouldRemove {
-		state = rspb.PeerState_Tombstone
-	}
-	// set RegionState
-	meta.WriteRegionState(&a.ctx.kvWB, a.applier.region, state)
 	// write to db
 	err = a.ctx.kvWB.WriteToDB(a.engine.Kv)
 	if err != nil {
 		panic(err)
 	}
 	// read command should be processed after write to db
-	a.processReadCmds(a.ctx.res.ApplyState.AppliedIndex)
-	a.ctx.kvWB.Reset()
 	a.ctx.doneCbs()
+	a.processReadCmds(a.ctx.res.ApplyState.AppliedIndex)
 	err = a.router.send(a.applier.region.GetId(), message.Msg{
 		Type: message.MsgTypeApplyRes,
 		Data: &a.ctx.res,
@@ -256,7 +249,7 @@ func (a *applyMsgHandler) processAdminRequest(entry *eraftpb.Entry, req *raft_cm
 	case raft_cmdpb.AdminCmdType_ChangePeer:
 		a.processChangePeer(entry, req, resp)
 	case raft_cmdpb.AdminCmdType_Split:
-
+		a.processSplit(req, resp)
 	}
 	if cb != nil {
 		cb.Resp = resp
@@ -312,6 +305,11 @@ func (a *applyMsgHandler) processChangePeer(entry *eraftpb.Entry, req *raft_cmdp
 		peer:       changePeerCmd.Peer,
 	})
 	a.applier.setRegion(region)
+	state := rspb.PeerState_Normal
+	if a.applier.shouldRemove {
+		state = rspb.PeerState_Tombstone
+	}
+	meta.WriteRegionState(&a.ctx.kvWB, region, state)
 }
 
 func (a *applyMsgHandler) processSplit(req *raft_cmdpb.RaftCmdRequest, resp *raft_cmdpb.RaftCmdResponse) {
@@ -340,8 +338,7 @@ func (a *applyMsgHandler) processSplit(req *raft_cmdpb.RaftCmdRequest, resp *raf
 	}
 	region.EndKey = util.SafeCopy(split.SplitKey)
 	meta.WriteRegionState(&a.ctx.kvWB, newRegion, rspb.PeerState_Normal)
-	// origin region will set int HandleApplyMsg func
-	// meta.WriteRegionState(&a.ctx.kvWB, region, rspb.PeerState_Normal)
+	meta.WriteRegionState(&a.ctx.kvWB, region, rspb.PeerState_Normal)
 	resp.AdminResponse = &raft_cmdpb.AdminResponse{
 		CmdType: raft_cmdpb.AdminCmdType_Split,
 		Split: &raft_cmdpb.SplitResponse{
