@@ -10,7 +10,25 @@ import (
 	"github.com/pingcap-incubator/tinykv/proto/pkg/metapb"
 	"github.com/pingcap-incubator/tinykv/proto/pkg/raft_cmdpb"
 	rspb "github.com/pingcap-incubator/tinykv/proto/pkg/raft_serverpb"
+	"github.com/pingcap-incubator/tinykv/raft"
 )
+
+// move MsgApply & MsgApplyRes here to avoid cycle import
+type MsgApply struct {
+	Update        bool
+	Term          uint64
+	Region        *metapb.Region
+	Proposals     []*Proposal
+	ReadProposals []*ReadProposal
+	ReadCmds      []raft.ReadState
+	CommitEntries []eraftpb.Entry
+}
+
+type MsgApplyRes struct {
+	ApplyState   *rspb.RaftApplyState
+	SizeDiffHint int64
+	ProcessRes   []ProcessResult
+}
 
 type applyMsgHandler struct {
 	applier *applier
@@ -20,7 +38,7 @@ type applyMsgHandler struct {
 }
 
 type applyContext struct {
-	res  message.MsgApplyRes
+	res  MsgApplyRes
 	kvWB engine_util.WriteBatch
 	cbs  []*message.Callback
 }
@@ -61,14 +79,14 @@ func newApplyMsgHandler(applier *applier, router *router, engine *engine_util.En
 		router:  router,
 		engine:  engine,
 		ctx: applyContext{
-			res: message.MsgApplyRes{
+			res: MsgApplyRes{
 				ApplyState: state,
 			},
 		},
 	}
 }
 
-func (a *applyMsgHandler) HandleApplyMsg(msg *message.MsgApply) {
+func (a *applyMsgHandler) HandleApplyMsg(msg *MsgApply) {
 	// after apply a snapshot, Update will set to true.
 	// We ensure that every penging apply task for that region
 	// will be done before apply the snapshot.

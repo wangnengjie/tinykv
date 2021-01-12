@@ -67,7 +67,7 @@ func (d *peerMsgHandler) HandleRaftReady() {
 			d.ctx.storeMeta.Unlock()
 		}
 		d.Send(d.ctx.trans, rd.Messages)
-		msg := &message.MsgApply{
+		msg := &MsgApply{
 			Update:        snapApplyRes != nil,
 			Term:          d.Term(),
 			Region:        d.Region(),
@@ -458,7 +458,7 @@ func (d *peerMsgHandler) HandleMsg(msg message.Msg) {
 	case message.MsgTypeStart:
 		d.startTicker()
 	case message.MsgTypeApplyRes:
-		d.onApplyResult(msg.Data.(*message.MsgApplyRes))
+		d.onApplyResult(msg.Data.(*MsgApplyRes))
 	}
 }
 
@@ -979,7 +979,7 @@ func (d *peerMsgHandler) onPrepareSplitRegion(regionEpoch *metapb.RegionEpoch, s
 	}
 }
 
-func (d *peerMsgHandler) onApplyResult(msg *message.MsgApplyRes) {
+func (d *peerMsgHandler) onApplyResult(msg *MsgApplyRes) {
 	// apply state has been written to db in apply_worker
 	d.peerStorage.applyState = msg.ApplyState
 	sizeDiff := int64(d.peer.SizeDiffHint) + msg.SizeDiffHint

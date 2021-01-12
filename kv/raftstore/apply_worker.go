@@ -35,7 +35,7 @@ func (aw *applyWorker) run(closeCh <-chan struct{}, wg *sync.WaitGroup) {
 				panic(fmt.Sprintf("msg type should be %d but get %d", message.MsgTypeApply, msg.Type))
 			}
 			ps := aw.router.get(msg.RegionID)
-			newApplyMsgHandler(ps.applier, aw.router, aw.engine).HandleApplyMsg(msg.Data.(*message.MsgApply))
+			newApplyMsgHandler(ps.applier, aw.router, aw.engine).HandleApplyMsg(msg.Data.(*MsgApply))
 		}
 	}
 }

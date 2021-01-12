@@ -1,13 +1,9 @@
 package message
 
 import (
-	"github.com/pingcap-incubator/tinykv/kv/raftstore"
 	"github.com/pingcap-incubator/tinykv/kv/raftstore/snap"
-	"github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 	"github.com/pingcap-incubator/tinykv/proto/pkg/metapb"
 	"github.com/pingcap-incubator/tinykv/proto/pkg/raft_cmdpb"
-	rspb "github.com/pingcap-incubator/tinykv/proto/pkg/raft_serverpb"
-	"github.com/pingcap-incubator/tinykv/raft"
 )
 
 type MsgType int64
@@ -77,18 +73,20 @@ type MsgSplitRegion struct {
 	Callback    *Callback
 }
 
-type MsgApply struct {
-	Update        bool
-	Term          uint64
-	Region        *metapb.Region
-	Proposals     []*raftstore.Proposal
-	ReadProposals []*raftstore.ReadProposal
-	ReadCmds      []raft.ReadState
-	CommitEntries []eraftpb.Entry
-}
-
-type MsgApplyRes struct {
-	ApplyState   *rspb.RaftApplyState
-	SizeDiffHint int64
-	ProcessRes   []raftstore.ProcessResult
-}
+// MsgApply & MsgApplyRes here will cause cycle import because of raftStore
+// So move them to apply_msg_worker.go
+//type MsgApply struct {
+//	Update        bool
+//	Term          uint64
+//	Region        *metapb.Region
+//	Proposals     []*raftstore.Proposal
+//	ReadProposals []*raftstore.ReadProposal
+//	ReadCmds      []raft.ReadState
+//	CommitEntries []eraftpb.Entry
+//}
+//
+//type MsgApplyRes struct {
+//	ApplyState   *rspb.RaftApplyState
+//	SizeDiffHint int64
+//	ProcessRes   []raftstore.ProcessResult
+//}
