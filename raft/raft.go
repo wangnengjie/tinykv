@@ -378,7 +378,7 @@ func (r *Raft) tick() {
 				pr.resentSnapshotTick++
 				// reset SnapState to recent a snapshot, since we don't have a method to
 				// check whether s snapshot is successfully sent
-				if pr.resentSnapshotTick >= r.electionTimeout {
+				if pr.resentSnapshotTick >= 2*r.electionTimeout {
 					pr.SnapState = SnapStateNormal
 				}
 			}
@@ -559,6 +559,9 @@ func (r *Raft) stepLeader(m pb.Message) error {
 	switch m.MsgType {
 	case pb.MessageType_MsgPropose:
 		if r.leadTransferee != None {
+			return ErrProposalDropped
+		}
+		if _, ok := r.Prs[r.id]; !ok {
 			return ErrProposalDropped
 		}
 		r.appendEntries(m.Entries)

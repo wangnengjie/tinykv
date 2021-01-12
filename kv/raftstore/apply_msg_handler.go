@@ -167,7 +167,7 @@ func (a *applyMsgHandler) process(entry *eraftpb.Entry) {
 		return
 	}
 	if req.AdminRequest != nil {
-
+		a.processAdminRequest(entry, req)
 	} else {
 		a.processWriteCmd(entry, req)
 	}
