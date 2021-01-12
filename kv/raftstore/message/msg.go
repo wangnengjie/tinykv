@@ -1,9 +1,13 @@
 package message
 
 import (
+	"github.com/pingcap-incubator/tinykv/kv/raftstore"
 	"github.com/pingcap-incubator/tinykv/kv/raftstore/snap"
+	"github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 	"github.com/pingcap-incubator/tinykv/proto/pkg/metapb"
 	"github.com/pingcap-incubator/tinykv/proto/pkg/raft_cmdpb"
+	rspb "github.com/pingcap-incubator/tinykv/proto/pkg/raft_serverpb"
+	"github.com/pingcap-incubator/tinykv/raft"
 )
 
 type MsgType int64
@@ -30,6 +34,10 @@ const (
 	MsgTypeRegionApproximateSize MsgType = 6
 	// message to trigger gc generated snapshots
 	MsgTypeGcSnap MsgType = 7
+	//
+	MsgTypeApply MsgType = 8
+	//
+	MsgTypeApplyRes MsgType = 9
 
 	// message wraps a raft message to the peer not existing on the Store.
 	// It is due to region split or add peer conf change
@@ -67,4 +75,20 @@ type MsgSplitRegion struct {
 	RegionEpoch *metapb.RegionEpoch
 	SplitKey    []byte
 	Callback    *Callback
+}
+
+type MsgApply struct {
+	Update        bool
+	Term          uint64
+	Region        *metapb.Region
+	Proposals     []*raftstore.Proposal
+	ReadProposals []*raftstore.ReadProposal
+	ReadCmds      []raft.ReadState
+	CommitEntries []eraftpb.Entry
+}
+
+type MsgApplyRes struct {
+	ApplyState   *rspb.RaftApplyState
+	SizeDiffHint int64
+	ProcessRes   []raftstore.ProcessResult
 }

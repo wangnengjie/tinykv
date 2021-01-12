@@ -56,14 +56,14 @@ func replicatePeer(storeID uint64, cfg *config.Config, sched chan<- worker.Task,
 	return NewPeer(storeID, cfg, engines, region, sched, metaPeer)
 }
 
-type proposal struct {
+type Proposal struct {
 	// index + term for unique identification
 	index uint64
 	term  uint64
 	cb    *message.Callback
 }
 
-type readProposal struct {
+type ReadProposal struct {
 	term    uint64
 	readCmd []byte
 	cb      *message.Callback
@@ -89,9 +89,8 @@ type peer struct {
 
 	// Record the callback of the proposals
 	// (Used in 2B)
-	proposals     []*proposal
-	readProposals []*readProposal
-	readRaftCmds  []raft.ReadState
+	proposals     []*Proposal
+	readProposals []*ReadProposal
 
 	// Index of last scheduled compacted raft log.
 	// (Used in 2C)
@@ -117,6 +116,8 @@ type peer struct {
 	// It's updated everytime the split checker scan the data
 	// (Used in 3B split)
 	ApproximateSize *uint64
+	// LastApplyingIndex record last index send to apply_sorker
+	LastApplyingIndex uint64
 }
 
 func NewPeer(storeId uint64, cfg *config.Config, engines *engine_util.Engines, region *metapb.Region, regionSched chan<- worker.Task,
@@ -234,8 +235,11 @@ func (p *peer) Destroy(engine *engine_util.Engines, keepData bool) error {
 	for _, proposal := range p.proposals {
 		NotifyReqRegionRemoved(region.Id, proposal.cb)
 	}
+	for _, prop := range p.readProposals {
+		NotifyReqRegionRemoved(region.Id, prop.cb)
+	}
 	p.proposals = nil
-
+	p.readProposals = nil
 	log.Infof("%v destroy itself, takes %v", p.Tag, time.Now().Sub(start))
 	return nil
 }
