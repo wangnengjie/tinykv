@@ -87,14 +87,15 @@ func newApplyMsgHandler(applier *applier, router *router, engine *engine_util.En
 }
 
 func (a *applyMsgHandler) HandleApplyMsg(msg *MsgApply) {
-	a.applier.setRegion(msg.Region)
 	a.applier.appendProposals(msg.Proposals)
 	a.applier.appendReadProposals(msg.ReadProposals)
 	a.applier.appendReadCmds(msg.ReadCmds)
 	// after apply a snapshot, Update will set to true.
-	// We ensure that every penging apply task for that region
-	// will be done before apply the snapshot.
+	// We ensure that every penging apply task for that region will be done before apply the snapshot.
+	// So when there is a snapshot to apply, HandleRaftReady will stop to get Ready util every previous apply task be done.
 	if msg.Update {
+		// only set region when update
+		a.applier.setRegion(msg.Region)
 		msg.CommitEntries = nil
 		a.applier.update(msg.Term)
 	}
@@ -102,6 +103,9 @@ func (a *applyMsgHandler) HandleApplyMsg(msg *MsgApply) {
 		a.applier.notifyStale(msg.Term)
 		return
 	}
+	//if len(msg.CommitEntries) > 0 {
+	//	fmt.Printf("[regionId %d] receive apply task, last entry index is %d\n", a.applier.region.Id, msg.CommitEntries[len(msg.CommitEntries)-1].Index)
+	//}
 	for _, entry := range msg.CommitEntries {
 		if a.ctx.res.ApplyState.AppliedIndex+1 != entry.Index {
 			panic(fmt.Sprintf("want index %d but get %d", a.ctx.res.ApplyState.AppliedIndex, entry.Index))
@@ -158,8 +162,10 @@ func (a *applyMsgHandler) process(entry *eraftpb.Entry) {
 		if cb != nil {
 			cb.Done(ErrResp(err))
 		}
+		//fmt.Printf("[regionId %d] entry index %d, %s\n", a.applier.region.Id, entry.Index, err.Error())
 		return
 	}
+	//fmt.Printf("[regionId %d] process entry index: %d", a.applier.region, entry.Index)
 	if req.AdminRequest != nil {
 		a.processAdminRequest(entry, req)
 	} else {
@@ -171,9 +177,12 @@ func (a *applyMsgHandler) processWriteCmd(entry *eraftpb.Entry, req *raft_cmdpb.
 	cb := a.applier.findCallBack(entry.Index, entry.Term)
 	resp := newCmdResp()
 	// check key in region, since there might be region split request when processing cmd
+	//fmt.Printf("[regionId %d] process write command. Key is %s, entry index is %d, regionEpoch is %s\n",
+	//	a.applier.region.Id, string(util.GetKeyInRequest(req.Requests[0])), entry.Index, a.applier.region.RegionEpoch)
 	for _, r := range req.Requests {
 		if key := util.GetKeyInRequest(r); key != nil {
 			if err := util.CheckKeyInRegion(key, a.applier.region); err != nil {
+				//fmt.Printf("[regionId %d] entry index %d, region endkey: %s, %s\n", a.applier.region.Id, entry.Index, string(a.applier.region.EndKey), err.Error())
 				if cb != nil {
 					BindRespError(resp, err)
 					cb.Done(resp)
@@ -250,6 +259,7 @@ func (a *applyMsgHandler) processAdminRequest(entry *eraftpb.Entry, req *raft_cm
 	case raft_cmdpb.AdminCmdType_ChangePeer:
 		a.processChangePeer(entry, req, resp)
 	case raft_cmdpb.AdminCmdType_Split:
+		//fmt.Printf("[regionId %d] process split region, entry index is %d, regionEpoch is %s", a.applier.region.Id, entry.Index, a.applier.region.RegionEpoch)
 		a.processSplit(req, resp)
 	}
 	if cb != nil {
