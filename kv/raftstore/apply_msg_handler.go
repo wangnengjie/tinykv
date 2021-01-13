@@ -95,6 +95,7 @@ func (a *applyMsgHandler) HandleApplyMsg(msg *MsgApply) {
 	// We ensure that every penging apply task for that region
 	// will be done before apply the snapshot.
 	if msg.Update {
+		msg.CommitEntries = nil
 		a.applier.update(msg.Term)
 	}
 	if a.applier.shouldRemove {
@@ -175,7 +176,7 @@ func (a *applyMsgHandler) processWriteCmd(entry *eraftpb.Entry, req *raft_cmdpb.
 			if err := util.CheckKeyInRegion(key, a.applier.region); err != nil {
 				if cb != nil {
 					BindRespError(resp, err)
-					cb.Done(nil)
+					cb.Done(resp)
 				}
 				return
 			}
@@ -286,14 +287,20 @@ func (a *applyMsgHandler) processChangePeer(entry *eraftpb.Entry, req *raft_cmdp
 		if idx == len(region.Peers) { // if not found in region peers
 			region.Peers = append(region.Peers, changePeerCmd.Peer)
 			region.RegionEpoch.ConfVer++
+		} else {
+			BindRespError(resp, fmt.Errorf("peer %d exist", changePeerCmd.Peer.Id))
+			return
 		}
 	case eraftpb.ConfChangeType_RemoveNode:
-		if idx != len(region.Peers) { // if found in region peers
+		if idx != len(region.Peers) && util.PeerEqual(region.Peers[idx], changePeerCmd.Peer) { // if found in region peers
 			region.Peers = append(region.Peers[:idx], region.Peers[idx+1:]...)
 			region.RegionEpoch.ConfVer++
 			if a.applier.id == changePeerCmd.Peer.Id {
 				a.applier.shouldRemove = true
 			}
+		} else {
+			BindRespError(resp, fmt.Errorf("peer unmatch or not exist"))
+			return
 		}
 	}
 	resp.AdminResponse = &raft_cmdpb.AdminResponse{CmdType: raft_cmdpb.AdminCmdType_ChangePeer, ChangePeer: &raft_cmdpb.ChangePeerResponse{Region: region}}
@@ -319,8 +326,12 @@ func (a *applyMsgHandler) processSplit(req *raft_cmdpb.RaftCmdRequest, resp *raf
 		panic(err)
 	}
 	split := req.AdminRequest.Split
-	if err := util.CheckKeyInRegion(split.SplitKey, region); err != nil {
+	if err = util.CheckKeyInRegion(split.SplitKey, region); err != nil {
 		BindRespError(resp, err)
+		return
+	}
+	if len(split.NewPeerIds) != len(region.Peers) {
+		BindRespError(resp, fmt.Errorf("peer count unmatch want %d got %d", len(region.Peers), len(split.NewPeerIds)))
 		return
 	}
 	region.RegionEpoch.Version++

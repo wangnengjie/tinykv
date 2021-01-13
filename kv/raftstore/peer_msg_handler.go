@@ -48,7 +48,7 @@ func (d *peerMsgHandler) HandleRaftReady() {
 		return
 	}
 	// Your Code Here (2B).
-	if d.RaftGroup.HasPendingSnapshot() && d.LastApplyingIndex > d.peerStorage.applyState.AppliedIndex {
+	if d.RaftGroup.HasPendingSnapshot() && d.LastApplyingIndex != d.peerStorage.applyState.AppliedIndex {
 		return
 	}
 	if d.RaftGroup.HasReady() {
@@ -57,7 +57,6 @@ func (d *peerMsgHandler) HandleRaftReady() {
 		if err != nil {
 			panic(err)
 		}
-		d.Send(d.ctx.trans, rd.Messages)
 		if snapApplyRes != nil {
 			d.ctx.storeMeta.Lock()
 			d.ctx.storeMeta.setRegion(snapApplyRes.Region, d.peer)
@@ -68,6 +67,7 @@ func (d *peerMsgHandler) HandleRaftReady() {
 			d.ctx.storeMeta.Unlock()
 			d.LastApplyingIndex = d.peerStorage.AppliedIndex()
 		}
+		d.Send(d.ctx.trans, rd.Messages)
 		msg := &MsgApply{
 			Update:        snapApplyRes != nil,
 			Term:          d.Term(),
@@ -998,6 +998,12 @@ func (d *peerMsgHandler) onApplyResult(msg *MsgApplyRes) {
 			d.ctx.storeMeta.Lock()
 			d.ctx.storeMeta.regionRanges.Delete(&regionItem{region: d.Region()})
 			d.ctx.storeMeta.setRegion(payload.region, d.peer)
+			if dupRegion, ok := d.ctx.storeMeta.regions[payload.newRegion.Id]; ok {
+				if len(dupRegion.Peers) > 0 {
+					panic("don't know what happen")
+				}
+				d.ctx.router.close(dupRegion.Id)
+			}
 			d.ctx.storeMeta.regions[payload.newRegion.Id] = payload.newRegion
 			d.ctx.storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: payload.region})
 			d.ctx.storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: payload.newRegion})
@@ -1009,13 +1015,23 @@ func (d *peerMsgHandler) onApplyResult(msg *MsgApplyRes) {
 			for _, p := range payload.newRegion.Peers {
 				newPeer.insertPeerCache(p)
 			}
-			if d.IsLeader() {
-				d.HeartbeatScheduler(d.ctx.schedulerTaskSender)
-				newPeer.HeartbeatScheduler(d.ctx.schedulerTaskSender)
-			}
 			d.ctx.router.register(newPeer)
 			// see in startworkers & maybeCreateWorkers
 			_ = d.ctx.router.send(payload.newRegion.Id, message.Msg{Type: message.MsgTypeStart})
+			if d.IsLeader() {
+				d.HeartbeatScheduler(d.ctx.schedulerTaskSender)
+				newPeer.HeartbeatScheduler(d.ctx.schedulerTaskSender)
+				newPeer.MaybeCampaign(true)
+			}
+			d.ctx.storeMeta.Lock()
+			for i, m := range d.ctx.storeMeta.pendingVotes {
+				if util.PeerEqual(m.ToPeer, newPeer.Meta) {
+					d.ctx.storeMeta.pendingVotes = append(d.ctx.storeMeta.pendingVotes[:i], d.ctx.storeMeta.pendingVotes[i:]...)
+					_ = d.ctx.router.send(payload.newRegion.Id, message.Msg{Type: message.MsgTypeRaftMessage, Data: m})
+					break
+				}
+			}
+			d.ctx.storeMeta.Unlock()
 			d.ApproximateSize = nil
 		case ProcessTypeConfChangeRes:
 			payload := res.paylod.(*ProcessConfChangeRes)

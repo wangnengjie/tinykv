@@ -359,7 +359,7 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 	ps.applyState.AppliedIndex = snapIndex
 	ps.applyState.TruncatedState.Index = snapIndex
 	ps.applyState.TruncatedState.Term = snapTerm
-	notifier := make(chan bool, 1)
+	notifier := make(chan bool)
 	ps.regionSched <- &runner.RegionTaskApply{
 		RegionId: snapData.Region.Id,
 		Notifier: notifier,

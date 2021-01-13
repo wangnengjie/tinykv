@@ -107,6 +107,7 @@ func (a *applier) getReadCmd(appliedIndex uint64) []raft.ReadState {
 	for i, cmd := range a.readCmds {
 		if cmd.ReadIndex > appliedIndex {
 			idx = i
+			break
 		}
 	}
 	cmds := a.readCmds[:idx]
