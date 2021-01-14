@@ -30,6 +30,10 @@ const (
 	MsgTypeRegionApproximateSize MsgType = 6
 	// message to trigger gc generated snapshots
 	MsgTypeGcSnap MsgType = 7
+	//
+	MsgTypeApply MsgType = 8
+	//
+	MsgTypeApplyRes MsgType = 9
 
 	// message wraps a raft message to the peer not existing on the Store.
 	// It is due to region split or add peer conf change
@@ -68,3 +72,21 @@ type MsgSplitRegion struct {
 	SplitKey    []byte
 	Callback    *Callback
 }
+
+// MsgApply & MsgApplyRes here will cause cycle import because of raftStore
+// So move them to apply_msg_worker.go
+//type MsgApply struct {
+//	Update        bool
+//	Term          uint64
+//	Region        *metapb.Region
+//	Proposals     []*raftstore.Proposal
+//	ReadProposals []*raftstore.ReadProposal
+//	ReadCmds      []raft.ReadState
+//	CommitEntries []eraftpb.Entry
+//}
+//
+//type MsgApplyRes struct {
+//	ApplyState   *rspb.RaftApplyState
+//	SizeDiffHint int64
+//	ProcessRes   []raftstore.ProcessResult
+//}

@@ -378,7 +378,7 @@ func (r *Raft) tick() {
 				pr.resentSnapshotTick++
 				// reset SnapState to recent a snapshot, since we don't have a method to
 				// check whether s snapshot is successfully sent
-				if pr.resentSnapshotTick >= r.electionTimeout {
+				if pr.resentSnapshotTick >= 2*r.electionTimeout {
 					pr.SnapState = SnapStateNormal
 				}
 			}
@@ -481,7 +481,7 @@ func (r *Raft) Step(m pb.Message) error {
 
 func (r *Raft) stepFollower(m pb.Message) error {
 	switch m.MsgType {
-	case pb.MessageType_MsgPropose:
+	case pb.MessageType_MsgPropose, pb.MessageType_MsgReadIndex:
 		return ErrProposalDropped
 	case pb.MessageType_MsgHup:
 		r.campaign()
@@ -493,12 +493,6 @@ func (r *Raft) stepFollower(m pb.Message) error {
 		r.handleAppendEntries(m)
 	case pb.MessageType_MsgSnapshot:
 		r.handleSnapshot(m)
-	case pb.MessageType_MsgReadIndex:
-		if r.Lead == None {
-			return nil
-		}
-		m.To = r.Lead
-		r.send(m)
 	case pb.MessageType_MsgReadIndexResponse:
 		r.readStates = append(r.readStates, ReadState{
 			ReadIndex:   m.Index,
@@ -520,7 +514,7 @@ func (r *Raft) stepFollower(m pb.Message) error {
 
 func (r *Raft) stepCandidate(m pb.Message) error {
 	switch m.MsgType {
-	case pb.MessageType_MsgPropose:
+	case pb.MessageType_MsgPropose, pb.MessageType_MsgReadIndex:
 		// candidate will drop the Propose msg
 		return ErrProposalDropped
 	case pb.MessageType_MsgHup:
@@ -561,6 +555,9 @@ func (r *Raft) stepLeader(m pb.Message) error {
 		if r.leadTransferee != None {
 			return ErrProposalDropped
 		}
+		if _, ok := r.Prs[r.id]; !ok {
+			return ErrProposalDropped
+		}
 		r.appendEntries(m.Entries)
 		r.eachPeer(func(id uint64, _ *Progress) {
 			r.sendAppend(id)
@@ -580,7 +577,7 @@ func (r *Raft) stepLeader(m pb.Message) error {
 		commitIndexTerm, err := r.RaftLog.Term(r.RaftLog.committed)
 		// reject readIndex when leader does not have lastest commit index
 		if err != nil || commitIndexTerm != r.Term {
-			return nil
+			return ErrProposalDropped
 		}
 		r.readOnly.addRequest(r.RaftLog.committed, &m)
 		if r.readOnly.recvAck(len(r.Prs), &m) {

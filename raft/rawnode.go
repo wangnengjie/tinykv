@@ -196,6 +196,11 @@ func (rn *RawNode) HasReady() bool {
 	return false
 }
 
+// HasPendingSnapshot check if there is a snapshot pending to apply
+func (rn *RawNode) HasPendingSnapshot() bool {
+	return rn.Raft.RaftLog.pendingSnapshot != nil
+}
+
 // Advance notifies the RawNode that the application has applied and saved progress in the
 // last Ready results.
 func (rn *RawNode) Advance(rd Ready) {
@@ -236,6 +241,6 @@ func (rn *RawNode) TransferLeader(transferee uint64) {
 }
 
 // ReadIndex tries to get a readindex for a readonly command
-func (rn *RawNode) ReadIndex(data []byte) {
-	_ = rn.Raft.Step(pb.Message{MsgType: pb.MessageType_MsgReadIndex, From: rn.Raft.id, Context: data})
+func (rn *RawNode) ReadIndex(data []byte) error {
+	return rn.Raft.Step(pb.Message{MsgType: pb.MessageType_MsgReadIndex, From: rn.Raft.id, Context: data})
 }

@@ -13,20 +13,23 @@ import (
 
 // peerState contains the peer states that needs to run raft command and apply command.
 type peerState struct {
-	closed uint32
-	peer   *peer
+	closed  uint32
+	peer    *peer
+	applier *applier
 }
 
 // router routes a message to a peer.
 type router struct {
 	peers       sync.Map // regionID -> peerState
 	peerSender  chan message.Msg
+	applySender chan *message.Msg
 	storeSender chan<- message.Msg
 }
 
 func newRouter(storeSender chan<- message.Msg) *router {
 	pm := &router{
 		peerSender:  make(chan message.Msg, 40960),
+		applySender: make(chan *message.Msg, 4096),
 		storeSender: storeSender,
 	}
 	return pm
@@ -43,7 +46,8 @@ func (pr *router) get(regionID uint64) *peerState {
 func (pr *router) register(peer *peer) {
 	id := peer.regionId
 	newPeer := &peerState{
-		peer: peer,
+		peer:    peer,
+		applier: newApplier(peer),
 	}
 	pr.peers.Store(id, newPeer)
 }
@@ -52,6 +56,7 @@ func (pr *router) close(regionID uint64) {
 	v, ok := pr.peers.Load(regionID)
 	if ok {
 		ps := v.(*peerState)
+		ps.applier.destroy()
 		atomic.StoreUint32(&ps.closed, 1)
 		pr.peers.Delete(regionID)
 	}
@@ -69,6 +74,10 @@ func (pr *router) send(regionID uint64, msg message.Msg) error {
 
 func (pr *router) sendStore(msg message.Msg) {
 	pr.storeSender <- msg
+}
+
+func (pr *router) sendApply(msg *message.Msg) {
+	pr.applySender <- msg
 }
 
 var errPeerNotFound = errors.New("peer not found")
