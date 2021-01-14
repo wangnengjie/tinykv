@@ -116,7 +116,7 @@ type peer struct {
 	// It's updated everytime the split checker scan the data
 	// (Used in 3B split)
 	ApproximateSize *uint64
-	// LastApplyingIndex record last index send to apply_sorker
+	// LastApplyingIndex record last entry index send to apply_sorker. Or index after apply snapshot.
 	LastApplyingIndex uint64
 }
 

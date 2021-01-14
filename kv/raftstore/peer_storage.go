@@ -342,6 +342,9 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 	// and send RegionTaskApply task to region worker through ps.regionSched, also remember call ps.clearMeta
 	// and ps.clearExtraData to delete stale data
 	// Your Code Here (2C).
+
+	// If just delete stale data without init check, some other data will be deleted.
+	// Todo: I should learn more about peer's life-circle.
 	if ps.isInitialized() {
 		if err := ps.clearMeta(kvWB, raftWB); err != nil {
 			return nil, err

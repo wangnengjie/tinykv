@@ -38,6 +38,7 @@ type applyMsgHandler struct {
 }
 
 type applyContext struct {
+	// res is the result of one apply task which will be sent to raftCh
 	res  MsgApplyRes
 	kvWB engine_util.WriteBatch
 	cbs  []*message.Callback
@@ -64,6 +65,7 @@ type ProcessCompactRes struct {
 type ProcessConfChangeRes struct {
 	region     *metapb.Region
 	confChange *eraftpb.ConfChange
+	// actually, peer info also set sin confChange, but need to Unmarshal
 	peer       *metapb.Peer
 }
 
@@ -87,6 +89,7 @@ func newApplyMsgHandler(applier *applier, router *router, engine *engine_util.En
 }
 
 func (a *applyMsgHandler) HandleApplyMsg(msg *MsgApply) {
+	a.applier.setTerm(msg.Term)
 	a.applier.appendProposals(msg.Proposals)
 	a.applier.appendReadProposals(msg.ReadProposals)
 	a.applier.appendReadCmds(msg.ReadCmds)
@@ -94,13 +97,13 @@ func (a *applyMsgHandler) HandleApplyMsg(msg *MsgApply) {
 	// We ensure that every penging apply task for that region will be done before apply the snapshot.
 	// So when there is a snapshot to apply, HandleRaftReady will stop to get Ready util every previous apply task be done.
 	if msg.Update {
-		// only set region when update
-		a.applier.setRegion(msg.Region)
 		msg.CommitEntries = nil
-		a.applier.update(msg.Term)
+		// Only use region in msg when update. As the apply task is async,
+		// region in msg mignt has old version except after apply snapshot.
+		a.applier.update(msg.Region)
 	}
 	if a.applier.shouldRemove {
-		a.applier.notifyStale(msg.Term)
+		a.applier.notifyStale()
 		return
 	}
 	//if len(msg.CommitEntries) > 0 {
@@ -126,8 +129,8 @@ func (a *applyMsgHandler) HandleApplyMsg(msg *MsgApply) {
 	if err != nil {
 		panic(err)
 	}
-	// read command should be processed after write to db
 	a.ctx.doneCbs()
+	// read command should be processed after write to db
 	a.processReadCmds(a.ctx.res.ApplyState.AppliedIndex)
 	err = a.router.send(a.applier.region.GetId(), message.Msg{
 		Type: message.MsgTypeApplyRes,
@@ -165,6 +168,7 @@ func (a *applyMsgHandler) process(entry *eraftpb.Entry) {
 		//fmt.Printf("[regionId %d] entry index %d, %s\n", a.applier.region.Id, entry.Index, err.Error())
 		return
 	}
+	// ToDo: move check key in region here
 	//fmt.Printf("[regionId %d] process entry index: %d", a.applier.region, entry.Index)
 	if req.AdminRequest != nil {
 		a.processAdminRequest(entry, req)
@@ -212,7 +216,7 @@ func (a *applyMsgHandler) processWriteCmd(entry *eraftpb.Entry, req *raft_cmdpb.
 func (a *applyMsgHandler) processReadCmds(appliedIndex uint64) {
 	readCmds := a.applier.getReadCmd(appliedIndex)
 LOOP:
-	for i, _ := range readCmds {
+	for i := range readCmds {
 		cb := a.applier.findReadCallBack(readCmds[i].ReadRequest)
 		if cb == nil {
 			continue
@@ -254,7 +258,7 @@ func (a *applyMsgHandler) processAdminRequest(entry *eraftpb.Entry, req *raft_cm
 	resp := newCmdResp()
 	switch req.AdminRequest.CmdType {
 	case raft_cmdpb.AdminCmdType_CompactLog:
-		// actually CompactLog do not have a callback, so resp is useless
+		// actually CompactLog does not have a callback, so resp is useless
 		a.processCompactLog(req, resp)
 	case raft_cmdpb.AdminCmdType_ChangePeer:
 		a.processChangePeer(entry, req, resp)

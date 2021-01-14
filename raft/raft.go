@@ -168,9 +168,9 @@ type Raft struct {
 	leaderTransferElasped int
 	// random
 	rand *rand.Rand
-
+	// readOnly store pending read request, waiting for heartbeat check
 	readOnly *readOnly
-
+	// readStates store read request that successfully get quorum check, it will set to Ready
 	readStates []ReadState
 
 	// leadTransferee is id of the leader transfer target when its value is not zero.
@@ -290,7 +290,7 @@ func (r *Raft) sendHeartbeat(to uint64) {
 }
 
 // sendReadIndexResp sends readindex RPC with readindex to peer.
-// Currently in tinykv, Read Req is only sent to leader,
+// Currently in tinykv, Read Req is only sent to leader(see in preProposeRaftCommand in peer_msg_handler.go),
 // so readIndexState's from field must be leader
 func (r *Raft) sendReadIndexResp(ris *readIndexState) {
 	if ris.from == r.id || ris.from == None {
@@ -364,12 +364,17 @@ func (r *Raft) tick() {
 				}
 				pr.recentActive = false
 			})
+			// in test TestOneSplit3B, partition is [1,2,3,4] [5]
+			// if 5 is leader before partition, the cluster will send request to 5,
+			// even if there is a newer leader in [1,2,3,4], and the test will block till timeout.
+			// so we need a method to make isolate leader become follower
 			if count <= len(r.Prs)/2 {
 				r.becomeFollower(r.Term, None)
 			}
 			r.Prs[r.id].recentActive = true
 		}
-		if r.leaderTransferElasped >= r.electionTimeout {
+		// Transfer Leader timeout, failed to transfer
+		if r.leadTransferee != None && r.leaderTransferElasped >= r.electionTimeout {
 			r.leaderTransferElasped = 0
 			r.leadTransferee = None
 		}
@@ -377,7 +382,9 @@ func (r *Raft) tick() {
 			if pr.SnapState == SnapStateSending {
 				pr.resentSnapshotTick++
 				// reset SnapState to recent a snapshot, since we don't have a method to
-				// check whether s snapshot is successfully sent
+				// check whether s snapshot is successfully sent.
+				// In test env, ticker is too fast, so set two times of electionTimeout.
+				// Sometimes it will cause too many open files err on OS X, as file open limit is only 256.
 				if pr.resentSnapshotTick >= 2*r.electionTimeout {
 					pr.SnapState = SnapStateNormal
 				}

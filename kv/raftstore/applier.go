@@ -24,10 +24,11 @@ func newApplier(peer *peer) *applier {
 	}
 }
 
-func (a *applier) update(term uint64) {
+// call update after apply a snapshot
+func (a *applier) update(region *metapb.Region) {
 	a.readCmds = nil
-	a.term = term
-	a.notifyStale(term)
+	a.setRegion(region)
+	a.notifyStale()
 }
 
 func (a *applier) destroy() {
@@ -44,12 +45,12 @@ func (a *applier) destroy() {
 	a.readProposals = nil
 }
 
-func (a *applier) notifyStale(term uint64) {
+func (a *applier) notifyStale() {
 	for _, prop := range a.proposals {
-		NotifyStaleReq(term, prop.cb)
+		NotifyStaleReq(a.term, prop.cb)
 	}
 	for _, prop := range a.readProposals {
-		NotifyStaleReq(term, prop.cb)
+		NotifyStaleReq(a.term, prop.cb)
 	}
 	a.proposals = nil
 	a.readProposals = nil
@@ -57,6 +58,10 @@ func (a *applier) notifyStale(term uint64) {
 
 func (a *applier) setRegion(region *metapb.Region) {
 	a.region = region
+}
+
+func (a *applier) setTerm(term uint64) {
+	a.term = term
 }
 
 func (a *applier) appendProposals(props []*Proposal) {

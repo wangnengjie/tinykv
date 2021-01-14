@@ -288,7 +288,10 @@ func (bs *Raftstore) startWorkers(peers []*peer) {
 
 func (bs *Raftstore) shutDown() {
 	close(bs.closeCh)
-	bs.router.sendApply(nil)
+	// We should not just stop applyWorker by closeCh or send nil to applyCh here.
+	// With some apply Task lost, it might cause some inconsistent errors.
+	// So, send nil to applyCh in raftWorker when it stop, as no more apply tasks will
+	// be generated after that.
 	bs.wg.Wait()
 	bs.tickDriver.stop()
 	if bs.workers == nil {

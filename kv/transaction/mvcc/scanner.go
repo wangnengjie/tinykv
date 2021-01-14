@@ -49,14 +49,15 @@ func (scan *Scanner) Next() ([]byte, []byte, error) {
 	if err != nil {
 		return nil, nil, err
 	}
+	// this key has been deleted
 	if write.Kind != WriteKindPut {
-		scan.iter.Seek(EncodeKey(userKey, 0))
+		scan.iter.Seek(EncodeKey(userKey, 0)) // go to next key
 		return scan.Next()
 	}
 	value, err := scan.txn.Reader.GetCF(engine_util.CfDefault, EncodeKey(userKey, write.StartTS))
 	if err != nil {
 		return nil, nil, err
 	}
-	scan.iter.Seek(EncodeKey(userKey, 0))
+	scan.iter.Seek(EncodeKey(userKey, 0)) // go to next key
 	return userKey, value, nil
 }

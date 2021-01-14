@@ -37,6 +37,7 @@ func (rw *raftWorker) run(closeCh <-chan struct{}, wg *sync.WaitGroup) {
 		msgs = msgs[:0]
 		select {
 		case <-closeCh:
+			rw.pr.sendApply(nil)
 			return
 		case msg := <-rw.raftCh:
 			msgs = append(msgs, msg)

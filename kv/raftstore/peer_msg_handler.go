@@ -46,43 +46,45 @@ func (d *peerMsgHandler) HandleRaftReady() {
 		return
 	}
 	// Your Code Here (2B).
+	// If there is a pending snapshot to apply, it should be applied after every apply task has finished.
 	if d.RaftGroup.HasPendingSnapshot() && d.LastApplyingIndex != d.peerStorage.applyState.AppliedIndex {
 		return
 	}
-	if d.RaftGroup.HasReady() {
-		rd := d.RaftGroup.Ready()
-		snapApplyRes, err := d.peerStorage.SaveReadyState(&rd)
-		if err != nil {
-			panic(err)
-		}
-		if snapApplyRes != nil {
-			d.ctx.storeMeta.Lock()
-			d.ctx.storeMeta.setRegion(snapApplyRes.Region, d.peer)
-			if len(snapApplyRes.PrevRegion.Peers) > 0 {
-				d.ctx.storeMeta.regionRanges.Delete(&regionItem{region: snapApplyRes.PrevRegion})
-			}
-			d.ctx.storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: snapApplyRes.Region})
-			d.ctx.storeMeta.Unlock()
-			d.LastApplyingIndex = d.peerStorage.AppliedIndex()
-		}
-		d.Send(d.ctx.trans, rd.Messages)
-		msg := &MsgApply{
-			Update:        snapApplyRes != nil,
-			Term:          d.Term(),
-			Region:        d.Region(),
-			Proposals:     d.proposals,
-			ReadProposals: d.readProposals,
-			ReadCmds:      rd.ReadStates,
-			CommitEntries: rd.CommittedEntries,
-		}
-		d.proposals = nil
-		d.readProposals = nil
-		if len(rd.CommittedEntries) != 0 && snapApplyRes == nil {
-			d.LastApplyingIndex = rd.CommittedEntries[len(rd.CommittedEntries)-1].Index
-		}
-		d.ctx.router.sendApply(&message.Msg{Type: message.MsgTypeApply, Data: msg, RegionID: d.regionId})
-		d.RaftGroup.Advance(rd)
+	if !d.RaftGroup.HasReady() {
+		return
 	}
+	rd := d.RaftGroup.Ready()
+	snapApplyRes, err := d.peerStorage.SaveReadyState(&rd)
+	if err != nil {
+		panic(err)
+	}
+	if snapApplyRes != nil {
+		d.ctx.storeMeta.Lock()
+		d.ctx.storeMeta.setRegion(snapApplyRes.Region, d.peer)
+		if len(snapApplyRes.PrevRegion.Peers) > 0 {
+			d.ctx.storeMeta.regionRanges.Delete(&regionItem{region: snapApplyRes.PrevRegion})
+		}
+		d.ctx.storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: snapApplyRes.Region})
+		d.ctx.storeMeta.Unlock()
+		d.LastApplyingIndex = d.peerStorage.AppliedIndex()
+	}
+	d.Send(d.ctx.trans, rd.Messages)
+	msg := &MsgApply{
+		Update:        snapApplyRes != nil,
+		Term:          d.Term(),
+		Region:        d.Region(),
+		Proposals:     d.proposals,
+		ReadProposals: d.readProposals,
+		ReadCmds:      rd.ReadStates,
+		CommitEntries: rd.CommittedEntries,
+	}
+	d.proposals = nil
+	d.readProposals = nil
+	if len(rd.CommittedEntries) != 0 && snapApplyRes == nil {
+		d.LastApplyingIndex = rd.CommittedEntries[len(rd.CommittedEntries)-1].Index
+	}
+	d.ctx.router.sendApply(&message.Msg{Type: message.MsgTypeApply, Data: msg, RegionID: d.regionId})
+	d.RaftGroup.Advance(rd)
 }
 
 func (d *peerMsgHandler) HandleMsg(msg message.Msg) {
@@ -253,7 +255,7 @@ func (d *peerMsgHandler) proposeRequest(msg *raft_cmdpb.RaftCmdRequest, cb *mess
 		panic(err)
 	}
 	if read {
-		t := time.Now().UnixNano()
+		t := time.Now().UnixNano() // use timestamp as unique tag.(will this cause performance problem?)
 		buf := bytes.NewBuffer([]byte{})
 		err = binary.Write(buf, binary.LittleEndian, t)
 		if err != nil {
@@ -636,6 +638,7 @@ func (d *peerMsgHandler) onPrepareSplitRegion(regionEpoch *metapb.RegionEpoch, s
 func (d *peerMsgHandler) onApplyResult(msg *MsgApplyRes) {
 	// apply state has been written to db in apply_worker
 	d.peerStorage.applyState = msg.ApplyState
+	// MsgApplyRes.SizeDiffHint will decrease when procee delete cmd, so it is int64 not uint64
 	sizeDiff := int64(d.peer.SizeDiffHint) + msg.SizeDiffHint
 	if sizeDiff > 0 {
 		d.peer.SizeDiffHint = uint64(sizeDiff)

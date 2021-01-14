@@ -80,6 +80,7 @@ func (s *balanceRegionScheduler) Schedule(cluster opt.Cluster) *operator.Operato
 	// Your Code Here (3C).
 	var suitableStores []*core.StoreInfo
 	for _, store := range cluster.GetStores() {
+		// there are may other info in store, a more perfect scheduler may use them
 		if store.IsUp() && store.DownTime() <= cluster.GetMaxStoreDownTime() && store.IsAvailable() {
 			suitableStores = append(suitableStores, store)
 		}

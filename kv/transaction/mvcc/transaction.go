@@ -71,7 +71,7 @@ func (txn *MvccTxn) GetLock(key []byte) (*Lock, error) {
 func (txn *MvccTxn) PutLock(key []byte, lock *Lock) {
 	// Your Code Here (4A).
 	txn.writes = append(txn.writes, storage.Modify{Data: storage.Put{
-		Key:   key, // The lock CF is accessed using the user key, so no need to add ts
+		Key:   key, // The lock CF is accessed only using the user key, so no need to add ts
 		Value: lock.ToBytes(),
 		Cf:    engine_util.CfLock,
 	}})

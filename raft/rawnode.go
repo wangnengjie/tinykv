@@ -64,6 +64,7 @@ type Ready struct {
 	// when the snapshot has been received or has failed by calling ReportSnapshot.
 	Messages []pb.Message
 
+	// ReadStates specifies read request with ReadIndex which is checked by quorum
 	ReadStates []ReadState
 }
 
