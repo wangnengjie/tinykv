@@ -121,7 +121,7 @@ type Progress struct {
 	// Since tinykv does not have a SnapStatus msg(in etcd/tikv),
 	// we don't know whether a snapshot is successfully sent.
 	// use such a tick to make SnapStateSending back to SnapStateNormal
-	resentSnapshotTick int
+	resendSnapshotTick int
 	// Check whether a peer is active. If not, do not sent snapshot.
 	// leader will reset recentActive state every electiontimeout
 	recentActive bool
@@ -325,7 +325,7 @@ func (r *Raft) sendSnapshot(to uint64) bool {
 	r.send(pb.Message{MsgType: pb.MessageType_MsgSnapshot, Snapshot: &snap, To: to, Term: r.Term})
 	pr.SnapState = SnapStateSending
 	pr.pendingSnapIndex = snap.Metadata.Index
-	pr.resentSnapshotTick = 0
+	pr.resendSnapshotTick = 0
 	return true
 }
 
@@ -380,12 +380,11 @@ func (r *Raft) tick() {
 		}
 		r.eachPeer(func(id uint64, pr *Progress) {
 			if pr.SnapState == SnapStateSending {
-				pr.resentSnapshotTick++
+				pr.resendSnapshotTick++
 				// reset SnapState to recent a snapshot, since we don't have a method to
 				// check whether s snapshot is successfully sent.
-				// In test env, ticker is too fast, so set two times of electionTimeout.
 				// Sometimes it will cause too many open files err on OS X, as file open limit is only 256.
-				if pr.resentSnapshotTick >= 2*r.electionTimeout {
+				if pr.resendSnapshotTick >= r.electionTimeout {
 					pr.SnapState = SnapStateNormal
 				}
 			}
@@ -439,7 +438,7 @@ func (r *Raft) becomeLeader() {
 		pr.SnapState = SnapStateNormal
 		pr.pendingSnapIndex = 0
 		pr.recentActive = true
-		pr.resentSnapshotTick = 0
+		pr.resendSnapshotTick = 0
 	})
 	r.readOnly = newReadOnly()
 	// propose a noop entry
@@ -648,7 +647,7 @@ func (r *Raft) handleAppendEntriesResponse(m pb.Message) {
 		if pr.SnapState == SnapStateSending && pr.Match >= pr.pendingSnapIndex {
 			pr.SnapState = SnapStateNormal
 			pr.pendingSnapIndex = 0
-			pr.resentSnapshotTick = 0
+			pr.resendSnapshotTick = 0
 		}
 		// update commit
 		if r.RaftLog.updateCommit(r.Term, r.Prs) {
@@ -750,7 +749,7 @@ func (r *Raft) addNode(id uint64) {
 			Next:               r.RaftLog.LastIndex() + 1,
 			SnapState:          SnapStateNormal,
 			pendingSnapIndex:   0,
-			resentSnapshotTick: 0,
+			resendSnapshotTick: 0,
 			recentActive:       true,
 		}
 	}
