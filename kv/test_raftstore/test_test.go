@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/rand"
 	_ "net/http/pprof"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -515,7 +516,16 @@ func TestSnapshotRecover2C(t *testing.T) {
 
 func TestSnapshotRecoverManyClients2C(t *testing.T) {
 	// Test: restarts, snapshots, many clients (2C) ...
+	//go func() {
+	//	http.ListenAndServe("0.0.0.0:8080", nil)
+	//}()
 	GenericTest(t, "2C", 20, false, true, false, 100, false, false)
+	runtime.GC()
+	var stat runtime.MemStats
+	runtime.ReadMemStats(&stat)
+	fmt.Printf("alloc:%d TotalAlloc:%d HeapAlloc:%d HeapReleased:%d\n", stat.Alloc, stat.TotalAlloc, stat.HeapAlloc, stat.HeapReleased)
+	//fmt.Println("success call gc")
+	//time.Sleep(1 * time.Hour)
 }
 
 func TestSnapshotUnreliable2C(t *testing.T) {

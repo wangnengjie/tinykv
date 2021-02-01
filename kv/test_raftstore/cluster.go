@@ -384,7 +384,7 @@ func (c *Cluster) Scan(start, end []byte) [][]byte {
 			values = append(values, value)
 		}
 		iter.Close()
-
+		txn.Discard()
 		key = region.EndKey
 		if len(key) == 0 {
 			break

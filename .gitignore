@@ -7,3 +7,6 @@ _tools
 /vendor
 tmp
 .DS_Store
+tmp2
+test_raftstore.test
+mem.out
