@@ -523,7 +523,8 @@ func TestSnapshotRecoverManyClients2C(t *testing.T) {
 	runtime.GC()
 	var stat runtime.MemStats
 	runtime.ReadMemStats(&stat)
-	fmt.Printf("alloc:%d TotalAlloc:%d HeapAlloc:%d HeapReleased:%d\n", stat.Alloc, stat.TotalAlloc, stat.HeapAlloc, stat.HeapReleased)
+	fmt.Printf("alloc:%d TotalAlloc:%d Sys:%d HeapAlloc:%d HeapSys:%d HeapIdle:%d HeapInuse:%d HeapReleased:%d\n",
+		stat.Alloc, stat.TotalAlloc, stat.Sys, stat.HeapAlloc, stat.HeapSys, stat.HeapIdle, stat.HeapInuse, stat.HeapReleased)
 	//fmt.Println("success call gc")
 	//time.Sleep(1 * time.Hour)
 }
